@@ -26,13 +26,18 @@ See [usage](usage.md) for detailed parameters and [testing](testing.md) for repr
 
 | Boundary | Responsibility |
 | --- | --- |
-| `adapters.py` | Resolve time using exponential bracketing and binary search over headers, query bounded RPC log ranges and discover historical top-level candidates through Etherscan V2 |
+| `adapters.py` | Resolve time using exponential bracketing and binary search over headers, query bounded RPC log ranges and discover historical top-level candidates through a configured index |
+| `history.py` | Select and page historical sources: operator snapshots, credential-free Routescan on Ethereum, Etherscan V2 when keyed, or Blockscout. Persist page, log-chunk and receipt state for resume and emit explicit coverage attestations or gaps |
 | `evidence.py` and `event_decoder.py` | Validate identities and decode fixed ERC-20 layouts or events with a supplied ABI |
 | `evidence_store.py` | Share bounded receipt evidence within a run and export raw transactions, raw logs and rejected records |
-| `analytics.py` | Calculate UTC buckets, counts and classifications from retained evidence |
+| `analytics.py` | Calculate UTC buckets, counts and classifications from retained evidence, marking unobserved days as null |
 | `report.py` | Assemble source, coverage and limits with deterministic investigation leads |
+| `planner.py` | Map an optional natural-language objective to a validated goal/window and a bounded, inspectable tool plan; model output cannot change membership, budget or evidence |
+| `v3.py` | Run project jobs with pinned snapshots, per-contract checkpoints, one bounded supplement, cross-checks and facts/inferences/unknowns separation |
 
-The RPC allowlist, TLS and shared 5 rps scheduler are reused. An index request uses a fixed HTTPS host and a credential from the environment. Pagination is bounded to five pages of 100 and candidate transaction fields are checked against RPC data. Index coverage remains unverified even at a terminal page. Events use up to 120 log queries, spans up to 10,000 blocks per request, and a raw log budget of 2,000 rows or 8 MiB. Large windows can exceed these budgets. Receipt, block identity and closing snapshot checks verify returned evidence within a single RPC's view. They do not attest consensus or absence of silent upstream omissions.
+The RPC allowlist, TLS and shared 5 rps scheduler are reused. An index request uses a fixed HTTPS host and a credential from the environment. Default Etherscan discovery is bounded to five pages of 100; Routescan pages 1,000 rows and respects its 10,000-row result window. Both caps can be raised with `CHAININQUEST_INDEX_MAX_PAGES` up to 200. Candidate transaction fields are checked against RPC data. Index coverage remains unverified even at a terminal page unless the provider watermark is attested. Events use up to 120 log queries, spans up to 10,000 blocks per request, and a raw log budget of 2,000 rows or 8 MiB. Large windows can exceed these budgets. Receipt, block identity and closing snapshot checks verify returned evidence within a single RPC's view. They do not attest consensus or absence of silent upstream omissions.
+
+For long ranges, `history.provider_for` prefers an operator snapshot, then Routescan on Ethereum, then a keyed Etherscan adapter, then Blockscout. Routescan coverage is attested only when `getblockreward` matches the RPC end-block header and every queued block range is exhausted. The attestation records provider, endpoint, watermark, page counts and scope; it is a provider-level statement, not proof of absence. Page and log budgets are bounded by `CHAININQUEST_INDEX_MAX_PAGES`. State is persisted after every page and answered log chunk, and a resumed job re-verifies receipts.
 
 Etherscan discovery uses the [V2 account transaction interface](https://docs.etherscan.io/api-reference/endpoint/txlist). Event layout uses [ERC-20](https://eips.ethereum.org/EIPS/eip-20) and the [Solidity ABI specification](https://docs.soliditylang.org/en/latest/abi-spec.html). The optional decoder uses eth-abi and eth-utils with the eth-hash PyCryptodome backend. Default execution retains its standard-library runtime. Evidence is written to stdout for the caller to retain. No service or local database is required.
 

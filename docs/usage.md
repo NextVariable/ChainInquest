@@ -82,9 +82,9 @@ python3 skills/onchain-address-inspector/scripts/query.py \
   --days 7 --total-timeout 120 --progress
 ```
 
-可用 `--days 30` 或一对带时区的 `--from-time`、`--to-time`。仅查区块时加 `--investigate` 可获得同样的报告结构。输入超过 1000 块时，可通过环境变量 `ETHERSCAN_API_KEY` 启用 Etherscan V2 历史顶层交易候选查询。事件仍由 RPC 查询。索引没有可核实的覆盖水位，结果不会标为完整历史。
+可用 `--days 30` 或一对带时区的 `--from-time`、`--to-time`。仅查区块时加 `--investigate` 可获得同样的报告结构。以太坊主网未配置 `ETHERSCAN_API_KEY` 时，默认使用免密的 Routescan Etherscan 兼容接口；只有 `getblockreward` 水位与 RPC 区块头一致且全部分页完成时，结果才标记为完整。Base 与 Monad 的长范围需要 Etherscan 密钥或运营方快照，否则覆盖状态为未知，不会显示为零活动。索引分页与日志分段会写入 `--history-state`，可用同一状态文件断点续跑。事件仍由 RPC 查询和回执核对。
 
-Use `--days 30` or an explicit pair of timestamps with offsets. For block ranges, opt in with `--investigate`. Configure `ETHERSCAN_API_KEY` in the environment to discover historical transaction candidates beyond 1000 blocks. The RPC supplies logs, block data, and receipt evidence. The index does not attest its coverage watermark.
+Use `--days 30` or an explicit pair of timestamps with offsets. For block ranges, opt in with `--investigate`. On Ethereum Mainnet, a credential-free Routescan Etherscan-compatible route is used when `ETHERSCAN_API_KEY` is not configured. A result is complete only when the `getblockreward` watermark matches the RPC header and every page was exhausted. Base and Monad long ranges require an Etherscan key or an operator snapshot; otherwise coverage is unknown, never zero. Index pages and log chunks are checkpointed through `--history-state` for resume. Logs still come from RPC and are reconciled with receipts.
 
 [调查报告字段、ABI 清单和统计口径 / Report fields, ABI manifest and definitions](../skills/onchain-address-inspector/references/investigation.md).
 

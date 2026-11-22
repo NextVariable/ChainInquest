@@ -59,3 +59,15 @@ Etherscan V2 链列表列出 10143。此次环境缺少 API key，匿名 `txlist
 V2.2 优先接入可声明历史覆盖水位的索引服务，并以至少一组已知有交易和一组已知为空的窗口做带凭证验收。另使用能查询历史状态的节点验证上述旧块的 `decimals()`，为相同地址分阶段的合约归属及代理升级引入版本化证据。
 
 最终冻结版本在 Python 3.14.3 上通过 100 项测试，总覆盖率 89.72%（含分支），通过现有 85% 门槛。Ruff 和打包检查通过，新用例由原有 CI 自动发现。
+
+## V4 RC 历史覆盖 / V4 RC historical coverage
+
+新增回归集中在 `tests/test_history_provider.py` 与 `tests/test_report_html.py`：索引分页水位与断点续跑、页面窗口拆分、缺失水位不得计为零活动、索引日志回执修复、RPC `eth_getLogs` 已答区间跳过，以及 HTML 转义、缺口展示和“未知而非零”的渲染。完整套件在本机 Python 3.13.9 上通过 129 项测试（跳过 1 项），Ruff 检查通过。
+
+2026-11-22 用免密 Routescan（以太坊）加 dRPC 回执完成三组真实 30 天验收，范围均为 `2026-10-23T07:33Z` 至 `2026-11-22T07:33Z`：
+
+- Compound Timelock：2 笔顶层交易、40 条核验事件，交易与事件覆盖均为 `complete` 且带水位 attestation。
+- Compound Governor Bravo：0 笔交易、0 条事件，`complete` 且有水位 attestation，证明“完整零活动”可与“未知”区分。
+- Uniswap V3 Factory：18 笔顶层交易（11 成功、7 失败）、617 条核验事件；修复了 Routescan 返回 `logIndex`/`transactionIndex` 为 `"0x"` 的行后，回执全部完整，缺口为 0。
+
+三组结果的原始 JSON 仅保存在被忽略的 `artifacts/` 或临时目录，不随仓库发布。Base 与 Monad 的 30 天验收仍被凭证阻塞：没有付费 Etherscan V2 计划或运营方快照，运行必须输出 `index_key_required` 并标记未知，不能计为零。高活跃合约在固定预算下仍可能以 `partial` 结束，这是可接受的诚实状态，不是验收失败。
