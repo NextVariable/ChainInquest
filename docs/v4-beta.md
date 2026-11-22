@@ -4,7 +4,7 @@ V4 reuses the V3 execution path and the single-address Skill. It adds historical
 
 ## Run locally
 
-From the repository root, run `python3 web/server.py --port 8000`. Open `http://127.0.0.1:8000`, load the Circle sample or paste a project request, enter an optional objective, preview the plan, confirm attribution and launch. The report separates facts, investigation candidates and unknowns. HTML is an inert attachment and includes the evidence catalog and raw records. JSON can be checked independently with `python3 scripts/verify_evidence.py REPORT.json`.
+From the repository root, run `python3 web/server.py --port 8000`. Open `http://127.0.0.1:8000`, then enter a project name, contract addresses, the HTTPS page that lists them, a goal and a time scope. Preview the readable plan, confirm attribution and launch. The raw manifest stays available under "Advanced" for existing users. The report separates facts, investigation candidates and unknowns, shows coverage per evidence type, and offers JSON and self-contained HTML downloads. JSON can be checked independently with `python3 scripts/verify_evidence.py REPORT.json`.
 
 ```sh
 python3 skills/onchain-address-inspector/scripts/v3.py \
@@ -23,6 +23,8 @@ Use `scope: {"days":30}` for a rolling window or `scope: {"from_time":"2026-10-0
 | Base / Monad Testnet Blockscout public endpoints | Base returned 403. The probed Monad Testnet endpoint returned 404. | These public endpoints are outside the adapter allowlist. |
 | Etherscan V2 | Registry lists Ethereum, Base and Monad Testnet. Base requires a paid plan in the observed registry. No API key was configured. | Use the existing keyed transaction candidate adapter if available. An exhausted page does not prove a complete range. Base 30-day coverage is credential-blocked and reported as unknown. |
 | Dune | Documentation lists Ethereum and Base. Monad Testnet coverage and runnable query/credits were not verified. | No live integration is enabled. |
+
+The keyed Etherscan adapter never attests coverage: its basis is `pagination_without_provider_watermark`. Resume state is reused only when the provider tag, address and block range all match. Deadline, page-budget and transport gaps belong to the run that produced them and are not replayed after a later successful resume.
 
 Routescan coverage has two independent parts. Transactions are paged across the exact block range with a persisted queue (`CHAININQUEST_INDEX_MAX_PAGES`, default 60, maximum 200). Event discovery runs five bounded queries (emitter, Transfer/Approval in, Transfer/Approval out) and deduplicates by transaction hash and log index. Every candidate row and log is reconciled against RPC transaction, receipt, block and topic fields before it contributes to metrics. When a row omits `logIndex` or `transactionIndex`, the receipt is fetched to repair it; an unrepaired row becomes a gap. Attestation means the provider watermark matched the RPC end block and pagination was exhausted; it is not cryptographic proof that the provider omitted nothing. Base and Monad long ranges without a configured key or operator snapshot remain `unknown`, never zero.
 
@@ -130,3 +132,106 @@ python3 scripts/reconcile_beta.py artifacts examples/beta/ethereum-26468359-drpc
 ```
 
 The saved [reference evidence](../examples/beta/ethereum-26468359-drpc.json) contains public dRPC data for block 26468359. It records raw values and event payloads to make the comparison repeatable even when a public API is limited. The RPC rerun still depends on the configured provider. Other raw probe outputs remain ignored under `artifacts/`. Fixture, public RPC, public index, authenticated index and model transport checks are distinct. Ethereum 30-day coverage has three attested live runs; Base and Monad 30-day coverage remain credential-blocked and are release gates, not completed acceptance.
+
+## V4.1 closed beta productization
+
+V4.1 does not add a new investigation engine. It removes the manifest-first entry barrier, makes coverage and recovery visible in the page, records structured tester feedback, and hardens state handling.
+
+### Guided entry
+
+The web page now asks for a project name, one to eight contract addresses, the HTTPS page that lists them, a goal and a scope (7 days, 30 days, 1–32 recent blocks or an explicit range under 32 blocks). The browser builds the manifest locally; the server still validates membership, attribution and limits. The plan preview renders the resolved ranges, attribution, ordered checks, rules and budget. Confirmation is single-use and expires after five minutes. The raw manifest remains available in the advanced section.
+
+A run with no model objective now also shows the deterministic plan steps. The planner remains optional and cannot change membership, scope or budget.
+
+### Feedback capture
+
+After a report is ready, the page asks four closed questions (goal achieved, report understood, missing data noticed, reuse intent) plus an optional 500-character comment. Feedback is written atomically as `feedback.json` inside the job directory, so it follows the same account isolation and retention rules as the report. The server records elapsed seconds from job timestamps and the observed coverage counts, not client claims.
+
+Summarize a store with:
+
+```sh
+python3 scripts/beta_feedback.py --store artifacts/web-investigations
+```
+
+### Retention
+
+Finished jobs are pruned manually. The default is a dry run:
+
+```sh
+python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30
+python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30 --apply
+```
+
+Running jobs and symlinks are skipped. Each candidate must be a direct, real child of the store or account directory, must have a readable state file with a valid age timestamp, and must not be `running` or `queued`. Deletion re-checks the state and takes the job's `.run.lock` immediately before removal, so a job that starts after planning is skipped as well. Malformed state, wrong directory names and paths outside the store are never deleted. There is no scheduler; pruning is an operator action.
+
+### Deployment checks
+
+`GET /healthz` returns `{"status":"ok"}` without authentication so a reverse proxy can probe liveness. When `CHAININQUEST_BETA_ORIGIN` is set, responses include `Strict-Transport-Security` and `X-Frame-Options: DENY` in addition to the existing CSP, nosniff, no-referrer and no-store headers. The service still terminates plain HTTP on loopback only; TLS is the proxy's job.
+
+| Control | Implemented behavior |
+| --- | --- |
+| Access | Optional bearer tokens compared as SHA-256 digests in constant time; one namespace per account |
+| Isolation | Job IDs are not credentials; cross-account reads, resumes and exports return 404 |
+| Rate limits | 8 POST/min and 45 GET/10s per principal; 16 sockets; one active run; previews capped at 64 |
+| Storage | 32 jobs per account, 32 MiB per result, 128 KiB per request |
+| Run budget | 120s default (15–240s), three attempts, 8 contracts, 60 index pages |
+| Redaction | RPC and index URLs omitted from reports; Authorization and bodies never logged; state files 0600, directories 0700 |
+| Restart | Completed jobs and checkpoints persist; the page detects a stalled run and offers resume |
+
+### Release hardening (V4.1 review)
+
+The pre-release audit added failure-path checks without changing the investigation engine:
+
+- Job state is validated against the expected schema on read. A truncated or type-corrupted `state.json` now raises `invalid_job` instead of a raw `KeyError` or `TypeError`, and the page reports it as a missing or invalid investigation.
+- Etherscan resume state is reused only when the provider tag, address, block range, page counter, row shape, gap shape and `done` flag all validate. Any mismatch restarts that range from page one rather than trusting malformed rows.
+- Pruning now re-validates the path, age, status and run lock at deletion time, as described under Retention.
+- The plan preview and HTML report label contract attribution as declared by the requester. "Confirmed" means the requester cited a source; it is not independent verification of ownership. The report says so beside the attribution table.
+- Feedback is reset when a new investigation is followed, so a previous job's thank-you state is not shown for another job.
+- An incomplete range still renders as `Unknown (0 observed)`, never as a proven zero.
+
+### Closed-beta acceptance checklist
+
+Run these against the exact build being invited. Status reflects the local review; production items remain blocked until the owner approves a host.
+
+| # | Check | Status |
+| --- | --- | --- |
+| 1 | `python3 -m unittest discover -s tests` passes | pass (154 tests, 1 skipped) |
+| 2 | `ruff check .`, `ruff format --check .`, `node --check web/app.js`, `python3 scripts/check_package.py` pass | pass |
+| 3 | Unauthenticated preview, job, result and export requests are rejected in closed-beta mode | pass (local test) |
+| 4 | One account cannot read, resume or export another account's job | pass (local test) |
+| 5 | Cross-origin POST, mismatched Host and replayed or expired approvals are rejected | pass (local test) |
+| 6 | Pruning leaves running, queued, fresh, locked, malformed and symlinked entries untouched | pass (unit tests) |
+| 7 | A corrupted state or resume file fails explicitly and recovers by restarting the affected range | pass (unit tests) |
+| 8 | Incomplete coverage never renders as zero activity in JSON, HTML or the page | pass (unit tests) |
+| 9 | Guided Circle example completes in a real browser with exports and feedback | pass (local, see below) |
+| 10 | TLS, exact Host header, log scrubbing and rate limits at the proxy | blocked (no host) |
+| 11 | Token issue, rotation and revocation with real testers | blocked (no testers) |
+| 12 | Base and long Ethereum ranges use an approved snapshot or paid index plan | blocked (no credential) |
+
+The single local browser run and the internal feedback entry are engineering checks. One internal run is not a user metric, and the sample must not be presented as real tester adoption.
+
+### Release notes and tag plan (prepared, not published)
+
+Draft tag: `v4.1.0-beta.1`, created only after PR #1 and PR #5 are merged into `main` and the post-merge CI run is green. Do not tag the feature branch.
+
+Release notes draft:
+
+- Guided project entry with contract list, declares source, goal and scope; manifest stays under Advanced.
+- Reviewable plan preview with single-use, 5-minute approval and no-membership model planner.
+- Readable report and HTML export separating established facts, labeled inferences, unknowns and evidence gaps.
+- Structured post-report feedback stored per job with server-computed elapsed time and coverage.
+- Safe manual retention tooling that skips running, locked, symlinked and malformed entries.
+- Hardened state and resume validation; malformed files fail explicitly instead of crashing a request.
+- Declared attribution is labelled as requester-provided, not independently verified ownership.
+- Known limits: Base and long Ethereum ranges remain `unknown` without a paid index plan or operator snapshot; deployment, TLS and token operations have only been validated locally.
+
+### Blocking items before any public invite
+
+1. No host, DNS record, certificate, credential or public listener was created; deployment still needs explicit owner approval.
+2. TLS must terminate at a managed proxy that preserves the exact Host header and enforces request-size and rate limits. The Python server is not a TLS server.
+3. Token distribution, rotation and revocation have only been tested locally, not with real testers.
+4. Base and long Ethereum ranges still need an operator snapshot or paid index plan; otherwise they correctly report `unknown`.
+5. The store is single-process. Do not run multiple server workers against the same directory.
+6. Retention and feedback summaries are manual commands, not scheduled jobs.
+7. Feedback is per-job JSON, not an analytics product; there is no dashboard.
+8. No independent security review of a live deployment has been performed.

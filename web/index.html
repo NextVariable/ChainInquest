@@ -9,43 +9,118 @@
 </head>
 <body>
   <header class="masthead">
-    <div class="frame bar"><a href="/" class="brand">Chain<span>Inquest</span></a><span class="local">Investigation desk</span></div>
+    <div class="frame bar"><a href="/" class="brand">Chain<span>Inquest</span></a><span class="local">Closed beta · read-only chain investigation</span></div>
   </header>
   <main class="frame">
     <section class="intro">
       <h1>Investigate a Web3 project</h1>
-      <p>Start with a confirmed contract list. Follow the activity from the project down to each transaction and event.</p>
+      <p>Enter the contracts, confirm where the addresses come from, pick a scope, and review the plan before anything runs. Missing evidence is shown as unknown, never as zero activity.</p>
     </section>
     <div class="workspace">
       <section class="setup" aria-labelledby="setup-title">
-        <div class="section-title"><h2 id="setup-title">Investigation scope</h2><button id="example" class="secondary" type="button">Load Circle example</button></div>
-        <form id="scope-form">
+        <div class="section-title"><h2 id="setup-title">Investigation setup</h2><button id="example" class="secondary" type="button">Load Circle example</button></div>
+        <form id="scope-form" novalidate>
           <div id="auth" hidden>
             <label for="access-token">Beta access token</label>
             <input id="access-token" type="password" autocomplete="off" maxlength="128">
             <button type="button" id="open-job" class="secondary">Open linked investigation</button>
           </div>
-          <label for="objective">Investigation objective <span>Optional</span></label>
-          <textarea id="objective" rows="2" maxlength="1500" placeholder="Show the last 7 days of transaction activity"></textarea>
-          <label for="manifest">Project request <span>JSON</span></label>
-          <textarea id="manifest" rows="15" spellcheck="false" required></textarea>
+
+          <fieldset>
+            <legend>1. Project and contracts</legend>
+            <label for="project">Project name</label>
+            <input id="project" type="text" maxlength="120" placeholder="Compound" autocomplete="off">
+            <label for="chain">Network</label>
+            <select id="chain">
+              <option value="10143">Monad Testnet</option>
+              <option value="1">Ethereum Mainnet</option>
+              <option value="8453">Base Mainnet</option>
+            </select>
+            <label for="addresses">Contract addresses <span>one per line, up to 8</span></label>
+            <textarea id="addresses" rows="4" spellcheck="false" placeholder="0x6d903f6003cca6255D85CcA4D3B5E5146dC33925"></textarea>
+            <label for="source">Where do these addresses come from? <span>HTTPS source</span></label>
+            <input id="source" type="url" maxlength="500" placeholder="https://docs.project.xyz/deployments" autocomplete="off">
+            <p class="hint">The report cites this page as your declared attribution source. ChainInquest verifies on-chain behavior, not legal ownership; it does not independently confirm that the project controls these addresses.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>2. Goal and scope</legend>
+            <label for="goal">What should the report focus on?</label>
+            <select id="goal">
+              <option value="overview">Overview</option>
+              <option value="activity">Activity and trends</option>
+              <option value="flows">Funds and counterparties</option>
+            </select>
+            <label for="scope">Time scope</label>
+            <select id="scope">
+              <option value="days7">Last 7 days</option>
+              <option value="days30" selected>Last 30 days</option>
+              <option value="recent">Recent blocks</option>
+              <option value="range">Explicit block range</option>
+            </select>
+            <div id="recent-scope" hidden>
+              <label for="recent-blocks">Number of recent blocks <span>1–32</span></label>
+              <input id="recent-blocks" type="number" min="1" max="32" value="4">
+            </div>
+            <div id="range-scope" hidden>
+              <label for="start-block">Start block</label>
+              <input id="start-block" type="number" min="0" placeholder="81761138">
+              <label for="end-block">End block <span>start + 31 at most</span></label>
+              <input id="end-block" type="number" min="0" placeholder="81761141">
+            </div>
+            <label for="objective">Optional question in your own words <span>Not evidence</span></label>
+            <textarea id="objective" rows="2" maxlength="1500" placeholder="Show the last 30 days of treasury activity"></textarea>
+          </fieldset>
+
+          <details id="advanced">
+            <summary>Advanced: paste a project manifest JSON</summary>
+            <label class="confirm"><input type="checkbox" id="json-mode"> Use the JSON below instead of the fields above</label>
+            <textarea id="manifest" rows="12" spellcheck="false" placeholder="{&quot;schema_version&quot;:&quot;1&quot;,...}"></textarea>
+          </details>
+
           <div class="actions"><button type="submit">Preview investigation plan</button></div>
         </form>
+
         <div id="review" hidden>
-          <h3>Confirm the plan and contracts</h3>
+          <h3>Review the plan and declared contracts</h3>
+          <p class="hint">Nothing has been queried yet. The approval expires after five minutes.</p>
           <div id="planned"></div>
+          <h4>Contracts and declared attribution</h4>
           <div id="contracts"></div>
-          <label class="confirm"><input type="checkbox" id="confirmed"> I reviewed the contract addresses and attribution sources.</label>
+          <label class="confirm"><input type="checkbox" id="confirmed"> I declare these are the project's contracts according to the source above. I understand ChainInquest has not independently verified ownership.</label>
           <button type="button" id="start" disabled>Start investigation</button>
         </div>
       </section>
       <section class="output" aria-labelledby="report-title">
-        <div class="section-title"><h2 id="report-title">Investigation report</h2><div class="exports"><button id="export" class="secondary" hidden>Export JSON</button> <button id="export-html" class="secondary" hidden>Export HTML</button></div></div>
+        <div class="section-title"><h2 id="report-title">Investigation report</h2><div class="exports"><button id="export" class="secondary" hidden>Download JSON</button> <button id="export-html" class="secondary" hidden>Download HTML</button></div></div>
         <div id="outcome" role="status" aria-live="polite" class="status">Ready to investigate</div>
         <div class="actions" id="resume-action" hidden><button id="resume" class="secondary" type="button">Resume this investigation</button></div>
         <p id="job-id" class="job-id"></p>
+        <div id="run-status" class="run-status" hidden>
+          <progress id="job-progress" max="100" value="0"></progress>
+          <p id="run-detail" class="hint"></p>
+        </div>
+        <div id="recovery" class="recovery" hidden></div>
         <div id="progress" class="timeline"></div>
         <div id="results"></div>
+        <section id="feedback" class="feedback" hidden aria-labelledby="feedback-title">
+          <h3 id="feedback-title">Was this investigation useful?</h3>
+          <p class="hint">Four quick questions. Answers are stored with this investigation only; no tokens are recorded. Do not include private keys, tokens or personal data in the comment.</p>
+          <form id="feedback-form">
+            <label for="fb-completed">Did you get the answer you needed?</label>
+            <select id="fb-completed"><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select>
+            <label for="fb-understood">Was the report easy to understand?</label>
+            <select id="fb-understood"><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select>
+            <label for="fb-incomplete">Did you notice missing or incomplete data?</label>
+            <select id="fb-incomplete"><option value="no">No</option><option value="yes">Yes</option><option value="unsure">Not sure</option></select>
+            <label for="fb-reuse">Would you use this again?</label>
+            <select id="fb-reuse"><option value="yes">Yes</option><option value="maybe">Maybe</option><option value="no">No</option></select>
+            <label for="fb-comment">Anything else? <span>optional, 500 characters</span></label>
+            <textarea id="fb-comment" rows="2" maxlength="500"></textarea>
+            <button type="submit">Send feedback</button>
+          </form>
+          <p id="feedback-done" hidden>Thank you. Your answers were recorded for this investigation.</p>
+        </section>
       </section>
     </div>
     <p id="error" role="alert" hidden></p>

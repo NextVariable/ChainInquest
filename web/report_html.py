@@ -136,6 +136,27 @@ def graph_section(analysis, catalog):
     )
 
 
+def contract_rows(result):
+    rows = []
+    for chain, item in (result.get("chains") or {}).items():
+        report = item.get("report") or {}
+        for deployment in report.get("deployments") or []:
+            if not isinstance(deployment, dict):
+                continue
+            for contract in deployment.get("contracts") or []:
+                attribution = contract.get("attribution") or {}
+                rows.append(
+                    [
+                        chain,
+                        deployment.get("id", ""),
+                        contract.get("address", ""),
+                        attribution.get("status", ""),
+                        ", ".join(str(source) for source in attribution.get("sources") or []),
+                    ]
+                )
+    return rows
+
+
 def render(result):
     conclusions = result.get("conclusions") or {}
     facts = conclusions.get("facts") or []
@@ -164,6 +185,13 @@ def render(result):
                 ]
             ],
         ),
+        "<h2>Contracts and declared attribution</h2>",
+        table(
+            ["Chain", "Deployment", "Contract", "Declared status", "Source"],
+            contract_rows(result),
+        ),
+        "<p>Attribution is declared by the investigation requester using the cited public sources. "
+        "ChainInquest verifies on-chain code and activity, not legal or organizational ownership.</p>",
         "<h2>Established facts</h2>",
         table(
             ["Chain", "Scope", "Transactions", "Events", "Coverage", "Proof references"],

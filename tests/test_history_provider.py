@@ -458,6 +458,24 @@ class StateFileTests(unittest.TestCase):
             )
             self.assertFalse((Path(root) / "history-state.json.tmp").exists())
 
+    def test_save_fsyncs_and_reports_failure_without_raising(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "history-state.json"
+            _, save = history_saver(str(path))
+            fsyncs = []
+            with patch("investigation.os.fsync", side_effect=fsyncs.append):
+                save({"schema_version": 1})
+            self.assertEqual(len(fsyncs), 1)
+            self.assertEqual(save.failures, 0)
+            with patch("investigation.os.replace", side_effect=OSError("disk full")):
+                save({"schema_version": 1, "rows": [["changed"]]})
+            self.assertEqual(save.failures, 1)
+            self.assertEqual(save.last_error, "OSError")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"schema_version": 1})
+            self.assertFalse((Path(root) / "history-state.json.tmp").exists())
+            save({"schema_version": 1, "rows": [["later"]]})
+            self.assertEqual(save.failures, 1)
+
     def test_corrupt_state_file_recovers_and_stays_private(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "history-state.json"

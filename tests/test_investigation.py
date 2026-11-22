@@ -260,6 +260,46 @@ class InvestigationTests(unittest.TestCase):
         ):
             self.assertEqual(adapter.discover(A, 0, 3)[1][0]["reason"], "index_page_budget")
 
+    def test_etherscan_resume_rejects_foreign_state_and_drops_stale_gaps(self):
+        from types import SimpleNamespace
+
+        foreign = {
+            "schema_version": 1,
+            "provider": "another_provider",
+            "address": A,
+            "start_block": 1,
+            "end_block": 3,
+            "next_page": 2,
+            "rows": [[H, 2, {}]],
+            "gaps": [{"reason": "index_deadline", "page": 2}],
+            "done": True,
+        }
+        adapter = EtherscanAdapter(INDEX_SECRET, SimpleNamespace(timeout=2, remaining=lambda: 2))
+        with patch.object(adapter, "page", return_value=[]):
+            rows, _ = adapter.discover(A, 1, 3, state=foreign)
+        self.assertEqual(rows, [])
+        self.assertEqual(adapter.coverage["pagination"]["rows"], 0)
+
+        saved = []
+        blocked = EtherscanAdapter(INDEX_SECRET, SimpleNamespace(timeout=2, remaining=lambda: 0))
+        with patch.object(blocked, "page", return_value=[]):
+            _, gaps = blocked.discover(A, 1, 3, save=saved.append)
+        self.assertEqual([gap["reason"] for gap in gaps], ["index_deadline"])
+        self.assertEqual(saved[-1]["gaps"], [])
+
+        resumed = EtherscanAdapter(INDEX_SECRET, SimpleNamespace(timeout=2, remaining=lambda: 2))
+        with patch.object(resumed, "page", return_value=[]):
+            _, gaps = resumed.discover(A, 1, 3, state=saved[-1])
+        self.assertEqual(gaps, [])
+        self.assertTrue(saved[-1]["done"])
+
+        malformed = {**saved[-1], "rows": {"not": "rows"}}
+        reset = EtherscanAdapter(INDEX_SECRET, SimpleNamespace(timeout=2, remaining=lambda: 2))
+        with patch.object(reset, "page", return_value=[]):
+            rows, _ = reset.discover(A, 1, 3, state=malformed)
+        self.assertEqual(rows, [])
+        self.assertEqual(reset.coverage["pagination"]["rows"], 0)
+
     def test_index_page_timeout_is_reported_on_python_310(self):
         class Client:
             timeout = 1
