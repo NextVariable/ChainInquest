@@ -20,8 +20,9 @@ sys.path.insert(0, str(ROOT / "web"))
 from access import Access  # noqa: E402
 from evidence import QueryError, invalid_constant, unique_object  # noqa: E402
 from jobs import JobStore  # noqa: E402
+from planner import build  # noqa: E402
 from report_html import render  # noqa: E402
-from v3 import plan_investigation, plan_objective, run  # noqa: E402
+from v3 import plan_investigation, plan_objective, run, window_days  # noqa: E402
 
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -49,6 +50,9 @@ class Demo:
             plan = (
                 plan_investigation(data) if objective is None else plan_objective(data, objective)
             )
+            if "plan" not in plan:
+                # Deterministic runs still get a readable step preview.
+                plan["plan"] = build({"goal": plan["goal"]}, window_days(plan))
             token = secrets.token_urlsafe(24)
             now = time.monotonic()
             self.previews = {k: v for k, v in self.previews.items() if v[0] > now}
