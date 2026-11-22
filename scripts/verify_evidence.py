@@ -7,8 +7,68 @@ import json
 from pathlib import Path
 
 
+def verify_investigation(result):
+    report = result["report"]
+    evidence = report["on_chain_evidence"]
+    computed = report["deterministic_metrics"]
+    txs = evidence["transactions"]
+    events = evidence["events"]
+    if not evidence["snapshot_checked"]:
+        assert computed["transactions"] is None and computed["token_event_counts"] is None
+        return {"schema_version": "2.0", "snapshot_checked": False}
+    totals = computed["transactions"]
+    if totals is not None:
+        assert len({t["hash"] for t in txs}) == len(txs) == totals["direct_transactions"]
+        assert all(
+            totals[s] == len([t for t in txs if t["status"] == s])
+            for s in ("success", "failed", "unknown")
+        )
+        target = report["target"]
+        for direction, field in (("in", "to"), ("out", "from")):
+            value = sum(
+                int(t["raw_transaction"]["value"], 16)
+                for t in txs
+                if t[field] == target and t["status"] == "success"
+            )
+            assert totals["native_value_successful_top_level_only"][direction + "_wei"] == str(
+                value
+            )
+        dates = {row["date"]: row for row in computed["daily_utc"]}
+        daily = collections.Counter(t["timestamp"][:10] for t in txs)
+        assert all(dates[day]["direct_transactions"] == count for day, count in daily.items())
+        assert sum(row["direct_transactions"] or 0 for row in dates.values()) == len(txs)
+    assert len({(e["block_hash"], e["log_index"]) for e in events}) == len(events)
+    tokens = [e for e in events if e["token"]]
+    for event in tokens:
+        token = event["token"]
+        amount = int(event["raw_log"]["data"], 16)
+        assert token["amount_raw"] == str(amount)
+        d = token["decimals"]
+        if d is None:
+            assert token["amount_display"] is None
+        else:
+            with decimal.localcontext() as context:
+                context.prec = 350
+                expected = decimal.Decimal(amount).scaleb(-d)
+                assert token["amount_display"] == format(expected, f".{d}f")
+    if computed["token_event_counts"] is not None:
+        assert all(
+            computed["token_event_counts"][k] == sum(t["token"]["kind"] == k for t in tokens)
+            for k in ("Transfer", "Approval")
+        )
+    return {
+        "schema_version": "2.0",
+        "transactions": len(txs),
+        "events": len(events),
+        "token_events": len(tokens),
+        "complete": result["coverage"]["complete"],
+    }
+
+
 def verify(path):
     result = json.loads(path.read_text())
+    if result.get("schema_version") == "2.0":
+        return verify_investigation(result)
     txs = result["transactions"]
     metrics = result["metrics"]
     if metrics is None:

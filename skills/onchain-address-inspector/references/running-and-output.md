@@ -16,7 +16,7 @@ Auto selects the standard-library HTTP/1.1 pool without proxy variables and curl
 
 Missing trusted Python CA configuration produces tls_failure and stops. Use properly configured Python, a trusted SSL_CERT_FILE bundle, or explicit curl with verification retained. Do not disable certificates or disguise environment failures as complete queries.
 
-`MONAD_TESTNET_RPC`或`--rpc`指定来源，凭证优先环境变量。URL必须为有效HTTP(S)、有效端口，无原始空白、控制字符或非空fragment。脚本只发送允许的五个读方法，不自动切换RPC或拼接不同来源。遇到公共节点失败，报告本次覆盖和错误；可明确选择sources-and-scope.md中的其他端点，重跑结果分别记录。
+`MONAD_TESTNET_RPC`或`--rpc`指定来源，凭证优先环境变量。URL必须为有效HTTP(S)、有效端口，无原始空白、控制字符或非空fragment。脚本只发送显式允许的只读方法，不自动切换RPC或拼接不同来源。遇到公共节点失败，报告本次覆盖和错误；可明确选择sources-and-scope.md中的其他端点，重跑结果分别记录。
 
 Choose the source with MONAD_TESTNET_RPC or --rpc; prefer environment variables for credentials. URLs require HTTP(S), valid ports, no raw whitespace/control characters, and no nonempty fragment. Only five allowlisted read methods are sent. Sources are not switched or merged automatically. Report coverage/errors on failure and record any explicitly selected alternative endpoint as a separate run.
 
@@ -24,7 +24,7 @@ stdout始终一个JSON文档，`--progress`将阶段、完成数及五秒心跳�
 
 Stdout is one JSON document. --progress writes phases, counts, and five-second heartbeats to stderr. Phases are network, blocks, consistency, receipts, code, done/incomplete. Counts include failed tasks and do not mean successful retrieval. elapsed_seconds includes scheduling and result assembly, not a performance promise. Exit 0 means complete; exit 2 means error/incomplete. Help exits 0 without network access.
 
-输出schema_version为1.7。requested_range记录输入及本次解析范围，actual_scanned_range只描述已成功块的最小/最大值、成功数及是否有空洞；检查successful_blocks/failed_blocks才可知道实际覆盖。chain_id来自RPC核对。queried_at/completed_at为UTC时间。
+旧区块模式输出schema_version为1.7。requested_range记录输入及本次解析范围，actual_scanned_range只描述已成功块的最小/最大值、成功数及是否有空洞；检查successful_blocks/failed_blocks才可知道实际覆盖。chain_id来自RPC核对。queried_at/completed_at为UTC时间。
 
 Schema version is 1.7. requested_range records input and resolved bounds. actual_scanned_range reports retrieved minimum/maximum blocks, count, and possible gaps; inspect successful_blocks/failed_blocks for actual coverage. chain_id is checked against RPC. Query start/end timestamps are UTC.
 

@@ -31,11 +31,13 @@ python3 skills/onchain-address-inspector/scripts/query.py \
 
 Defaults: latest 100 blocks, 120-second total budget, maximum 1000 blocks. Larger ranges require an explicit longer budget such as `--total-timeout 600`; public RPC completion is not guaranteed. JSON goes to stdout; progress goes to stderr. Exit code 0 means complete; 2 means invalid arguments or incomplete results.
 
+Investigation mode adds ERC-20-shaped Transfer/Approval events, UTC daily trends and a structured evidence report. Use `--investigate` with block arguments or request `--days 7`, `--days 30` or paired `--from-time/--to-time` timestamps. Long windows rely on index candidates and RPC evidence, with coverage gaps reported explicitly.
+
 ## Results and scope
 
 Check `coverage.complete`, `coverage.chain_consistent`, and `errors` first. Partial scans describe retrieved samples only. `metrics=null` means a reliable aggregate is unavailable; unknown receipts are not failed transactions. Native amounts use integer wei and include only successful top-level value.
 
-Direct-caller concentration includes transfers, failed transactions, and unknown outcomes. It does not establish human users, manipulation, or commercial adoption. Mainnet, complete history, internal calls, token transfers, and indirect interactions are excluded. See [usage](docs/usage.md) and [scope](skills/onchain-address-inspector/references/sources-and-scope.md).
+Direct-caller concentration includes transfers, failed transactions, and unknown outcomes. It does not establish human users, manipulation, or commercial adoption. Investigation mode separates top-level native value from token events. Coverage excludes mainnet, complete history, internal calls and indirect interactions. See [usage](docs/usage.md) and [scope](skills/onchain-address-inspector/references/sources-and-scope.md).
 
 ## Development
 

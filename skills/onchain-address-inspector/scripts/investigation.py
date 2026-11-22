@@ -1,0 +1,487 @@
+"""Opt-in investigation orchestration, separate from the legacy JSON schema."""
+
+import datetime as dt
+import os
+from copy import copy
+
+from adapters import ADDRESS, HASH, EtherscanAdapter, RpcAdapter
+from analytics import analyze
+from event_decoder import (
+    BYTES,
+    TOPICS,
+    AbiDecoder,
+    decimal_amount,
+    log_fields,
+    token_event,
+)
+from evidence import QueryError, apply_receipt_status, parse_block, quantity
+from evidence_store import EvidenceStore
+from query import CHAIN_ID, DEFAULT_BLOCKS, MAX_BLOCKS, MAX_RECEIPTS, Progress, scan, validate
+from report import generate
+from rpc_client import Client
+
+UTC = dt.timezone.utc
+
+
+def timestamp(value):
+    return dt.datetime.fromtimestamp(value, UTC).isoformat()
+
+
+def time_window(args, now):
+    if args.days is None and args.from_time is None and args.to_time is None:
+        return None
+    if any(x is not None for x in (args.start_block, args.end_block, args.recent_blocks)):
+        raise QueryError("Time and block ranges are mutually exclusive", "invalid_range")
+    if args.days:
+        if args.from_time is not None or args.to_time is not None:
+            raise QueryError("--days cannot be combined with timestamps", "invalid_range")
+        return now - args.days * 86400, now
+    try:
+        if not (args.from_time and args.to_time):
+            raise ValueError
+        times = [
+            dt.datetime.fromisoformat(t.replace("Z", "+00:00"))
+            for t in (args.from_time, args.to_time)
+        ]
+        if any(t.tzinfo is None or t.microsecond for t in times):
+            raise ValueError
+        a, b = (int(t.timestamp()) for t in times)
+        if not 0 <= a < b <= now or b - a > 366 * 86400:
+            raise ValueError
+        return a, b
+    except (ValueError, OverflowError, OSError):
+        raise QueryError(
+            "Provide a UTC-offset time window of at most 366 days, ending by now", "invalid_range"
+        ) from None
+
+
+def get_transaction(rpc, h, n, address):
+    raw = rpc.call("eth_getTransactionByHash", [h])
+    if not isinstance(raw, dict) or str(raw.get("hash")).lower() != h:
+        raise QueryError("Indexed transaction identity not corroborated", "index_mismatch")
+    _, block_hash, seconds = rpc.header(n)
+    found, _ = parse_block(
+        {
+            "number": hex(n),
+            "hash": block_hash,
+            "parentHash": "0x" + "0" * 64,  # parse_block only validates its format here.
+            "timestamp": hex(seconds),
+            "transactions": [raw],
+        },
+        n,
+        address,
+        raw=True,
+    )
+    if not found:
+        raise QueryError("Indexed transaction does not match target", "index_mismatch")
+    return found[0]
+
+
+def legacy_transactions(args, rpc, start, end):
+    options = copy(args)
+    options.start_block, options.end_block, options.recent_blocks = start, end, None
+    options.progress = False
+    # Reuse the legacy scanner without transferring ownership of the shared client.
+    out = scan(options, rpc)
+    anchor = rpc.header(end)
+    if not any(
+        h["block"] == end and h["hash"] == anchor[1] for h in out["coverage"]["block_headers"]
+    ):
+        out["coverage"]["chain_consistent"] = False
+    coverage = out["coverage"]
+    gaps = [{"reason": "block_fetch", "block": n} for n in coverage["failed_blocks"]] + coverage[
+        "data_anomalies"
+    ]
+    if not coverage["chain_consistent"]:
+        gaps.append({"reason": "chain_consistency"})
+    # Until corroboration succeeds, retain the raw transactions only as evidence.
+    return out["transactions"], {
+        "method": "rpc_block_scan",
+        "complete": coverage["scan_complete"] and not gaps,
+        "observed": bool(coverage["successful_blocks"]) and coverage["chain_consistent"],
+        "usable": coverage["chain_consistent"],
+        "gaps": gaps,
+        "errors": out["errors"],
+    }
+
+
+def indexed_transactions(rpc, index, address, start, end):
+    if index is None:
+        return [], {
+            "method": "etherscan_v2_txlist",
+            "complete": False,
+            "gaps": [{"reason": "index_key_required", "from": start, "to": end}],
+        }
+    candidates, gaps = index.discover(address, start, end)
+    txs = []
+    for h, n in candidates:
+        try:
+            txs.append(get_transaction(rpc, h, n, address))
+        except QueryError as error:
+            gaps.append({"hash": h, "block": n, "reason": error.category})
+    # V2 does not attest an indexed-through height for txlist. Report pagination
+    # completion independently and never infer that an empty page means no activity.
+    return txs, {
+        "method": "etherscan_v2_txlist",
+        "complete": False,
+        "pagination_and_corroboration_complete": not gaps,
+        "gaps": gaps + [{"reason": "index_coverage_not_attested", "from": start, "to": end}],
+    }
+
+
+def check_event(rpc, cache, event):
+    _, h, seconds = rpc.header(event["block"])
+    if h != event["block_hash"]:
+        raise QueryError("Log block hash mismatch", "log_mismatch")
+    transaction = {"hash": event["transaction_hash"], "block_hash": h, "block": event["block"]}
+    raw_receipt = cache.receipt(rpc, transaction["hash"])
+    apply_receipt_status(raw_receipt, transaction)
+    logs = raw_receipt.get("logs")
+    if (
+        transaction["status"] != "success"
+        or quantity(raw_receipt.get("transactionIndex")) != event["transaction_index"]
+        or not isinstance(logs, list)
+    ):
+        raise QueryError("Receipt cannot corroborate log", "log_mismatch")
+    matches = [
+        row
+        for row in logs
+        if isinstance(row, dict) and row.get("logIndex") == hex(event["log_index"])
+    ]
+    if len(matches) != 1 or log_fields(matches[0]) != event:
+        raise QueryError("Log is missing or conflicts with receipt", "log_mismatch")
+    return timestamp(seconds)
+
+
+def token_metadata(rpc, token, block):
+    raw = rpc.call("eth_call", [{"to": token, "data": "0x313ce567"}, hex(block)])
+    if not isinstance(raw, str) or not HASH.fullmatch(raw) or int(raw, 16) > 255:
+        raise QueryError("Invalid decimals() result", "decimals_unavailable")
+    return int(raw, 16)
+
+
+def get_events(rpc, cache, address, first, last, abi, window):
+    participant = "0x" + "0" * 24 + address[2:]
+    filters = [
+        {"topics": [list(TOPICS), participant]},
+        {"topics": [list(TOPICS), None, participant]},
+        {"address": address},
+    ]
+    rows, gaps = rpc.logs(first, last, filters)
+    accepted, rejected, conflicts = {}, [], set()
+    decimals = {}
+    for raw, a, b, i in rows:
+        try:
+            event = log_fields(raw)
+            topics = event["topics"]
+            if (
+                not a <= event["block"] <= b
+                or (i == 2 and event["contract"] != address)
+                or (
+                    i < 2
+                    and (
+                        len(topics) <= i + 1
+                        or topics[0] not in TOPICS
+                        or topics[i + 1] != participant
+                    )
+                )
+            ):
+                raise QueryError("Log falls outside requested filter", "log_mismatch")
+        except QueryError as error:
+            rejected.append({"reason": error.category, "raw_log": raw, "filter": i})
+            gaps.append({"reason": error.category, "from": a, "to": b, "filter": i})
+            continue
+        key = event["block"], event["log_index"]
+        if key in conflicts:
+            rejected.append({"reason": "conflicting_log", "raw_log": raw})
+            continue
+        if key in accepted:
+            prior, sources, prior_event = accepted[key]
+            if prior_event != event or i in sources:
+                rejected.extend(
+                    {"reason": "conflicting_or_duplicate_log", "raw_log": item}
+                    for item in (prior, raw)
+                )
+                gaps.append({"reason": "conflicting_or_duplicate_log", "block": key[0]})
+                conflicts.add(key)
+                del accepted[key]
+            else:
+                sources.add(i)
+            continue
+        accepted[key] = raw, {i}, event
+    events = []
+    for _, (raw, sources, event) in sorted(accepted.items()):
+        try:
+            stamp = check_event(rpc, cache, event)
+            if window and not window[0] <= rpc.header(event["block"])[2] < window[1]:
+                raise QueryError("Log timestamp falls outside requested window", "time_mismatch")
+        except QueryError as error:
+            rejected.append({"reason": error.category, "raw_log": raw})
+            gaps.append({"reason": error.category, "block": event["block"]})
+            continue
+        entry = {
+            **event,
+            "raw_log": raw,
+            "timestamp": stamp,
+            "filters": sorted(sources),
+            "token": None,
+            "abi": None,
+            "issues": [],
+        }
+        try:
+            entry["token"] = token_event(event)
+        except QueryError as error:
+            entry["issues"].append(error.category)
+        token = entry["token"]
+        if token:
+            key = event["contract"], event["block"]
+            if key not in decimals:
+                try:
+                    decimals[key] = token_metadata(rpc, *key)
+                except QueryError:
+                    decimals[key] = None
+            value = decimals[key]
+            token.update(
+                {
+                    "decimals": value,
+                    "amount_display": decimal_amount(token["amount_raw"], value),
+                    "decimals_at_block": event["block"] if value is not None else None,
+                }
+            )
+            if value is None:
+                entry["issues"].append("decimals_unavailable")
+        if abi:
+            try:
+                entry["abi"] = abi.decode(event)
+            except (ValueError, TypeError, KeyError, AttributeError, RuntimeError, RecursionError):
+                entry["issues"].append("abi_decode_failed")
+        events.append(entry)
+    return (
+        events,
+        rejected,
+        {
+            "method": "rpc_getLogs_and_receipts",
+            "complete": not gaps,
+            "filters": filters,
+            "gaps": gaps,
+            "completeness_basis": "RPC responses, no independent omission proof",
+        },
+    )
+
+
+def classify_interactions(rpc, txs):
+    cache = {}
+    for tx in txs:
+        to = tx["to"]
+        if to is None:
+            tx["interaction_at_block_end"] = "creation_attempt"
+            continue
+        key = to, tx["block"]
+        if key not in cache and len(cache) < 32:
+            try:
+                code = rpc.call("eth_getCode", [to, hex(tx["block"])])
+                cache[key] = (
+                    ("recipient_has_code" if code != "0x" else "recipient_no_code")
+                    if isinstance(code, str) and BYTES.fullmatch(code)
+                    else "unknown"
+                )
+            except QueryError:
+                cache[key] = "unknown"
+        tx["interaction_at_block_end"] = cache.get(key, "unknown")
+
+
+def investigate(args, client=None, index=None, now=None):
+    now = int(dt.datetime.now(UTC).timestamp()) if now is None else now
+    address = args.address.lower() if ADDRESS.fullmatch(args.address) else None
+    coverage = {
+        name: {"complete": False, "gaps": []} for name in ("transactions", "events", "receipts")
+    }
+    coverage["complete"] = False
+    source = {
+        "rpc": "configured Monad Testnet endpoint (URL omitted)",
+        "chain_id": None,
+        "query_started_at": timestamp(now),
+    }
+    requested = {
+        "days": args.days,
+        "from_time": None,
+        "to_time": None,
+        "start_block": args.start_block,
+        "end_block": args.end_block,
+        "recent_blocks": args.recent_blocks,
+    }
+    resolved = None
+    txs, events, rejected, errors = [], [], [], []
+    cache = EvidenceStore()
+    stable = False
+    complete_day_range = (None, None)
+    progress = Progress(args.progress)
+    progress.start()
+    raw_client = None
+    try:
+        window = time_window(args, now)
+        validate(args)
+        if window and args.days is None:
+            requested["from_time"], requested["to_time"] = map(timestamp, window)
+        abi = None
+        if args.abi_file:
+            try:
+                abi = AbiDecoder.load(args.abi_file)
+            except QueryError as error:
+                errors.append(error.detail())
+        raw_client = client or Client(
+            args.rpc,
+            args.timeout,
+            args.retries,
+            args.total_timeout,
+            args.transport,
+            args.concurrency,
+        )
+        rpc = RpcAdapter(raw_client)
+        source["chain_id"] = quantity(rpc.call("eth_chainId", []))
+        if source["chain_id"] != CHAIN_ID:
+            raise QueryError("Expected Monad Testnet chain ID 10143", "wrong_chain")
+        tip, tip_hash, tip_seconds = rpc.header("latest")
+        time_gaps = []
+        if window:
+            a, b = window
+            first, last = rpc.lower_bound(a, tip), rpc.lower_bound(b, tip) - 1
+            genesis_time = rpc.header(0)[2] if first == 0 else a
+            if a < genesis_time:
+                time_gaps.append(
+                    {
+                        "reason": "before_genesis",
+                        "from_time": timestamp(a),
+                        "to_time": timestamp(min(genesis_time, b)),
+                    }
+                )
+            if b > tip_seconds + 1:
+                time_gaps.append(
+                    {
+                        "reason": "after_rpc_head",
+                        "from_time": timestamp(max(a, tip_seconds + 1)),
+                        "to_time": timestamp(b),
+                    }
+                )
+            complete_day_range = timestamp(a), timestamp(b - 1)
+        else:
+            last = tip if args.end_block is None else args.end_block
+            first = (
+                args.start_block
+                if args.start_block is not None
+                else max(0, last - (args.recent_blocks or DEFAULT_BLOCKS) + 1)
+            )
+            if last > tip:
+                raise QueryError("End block exceeds RPC head", "invalid_range")
+        resolved = {
+            "start_block": first if first <= last else None,
+            "end_block": last if first <= last else None,
+            "from_time_inclusive": timestamp(window[0]) if window else None,
+            "to_time_exclusive": timestamp(window[1]) if window else None,
+            "rpc_head": {"block": tip, "hash": tip_hash, "timestamp": timestamp(tip_seconds)},
+        }
+        if first <= last:
+            anchor = rpc.header(last)
+            with rpc.reserve_snapshot_budget():
+                progress.update("transactions")
+                if last - first + 1 <= MAX_BLOCKS:
+                    txs, coverage["transactions"] = legacy_transactions(args, rpc, first, last)
+                else:
+                    key = os.environ.get("ETHERSCAN_API_KEY")
+                    index = index or (EtherscanAdapter(key, raw_client) if key else None)
+                    source["transaction_index"] = "Etherscan V2, normal txlist"
+                    txs, coverage["transactions"] = indexed_transactions(
+                        rpc, index, address, first, last
+                    )
+                if window and any(
+                    not window[0]
+                    <= int(dt.datetime.fromisoformat(tx["timestamp"]).timestamp())
+                    < window[1]
+                    for tx in txs
+                ):
+                    coverage["transactions"]["complete"] = False
+                    coverage["transactions"]["usable"] = False
+                    coverage["transactions"]["observed"] = False
+                    coverage["transactions"]["gaps"].append(
+                        {"reason": "transaction_timestamp_mismatch"}
+                    )
+                txs.sort(key=lambda t: (t["block"], t["hash"]))
+                if coverage["transactions"]["method"] != "rpc_block_scan":
+                    for tx in txs[:MAX_RECEIPTS]:
+                        try:
+                            apply_receipt_status(cache.receipt(rpc, tx["hash"]), tx)
+                        except QueryError as error:
+                            tx["receipt_error"] = error.detail()
+                else:
+                    failures = {
+                        e["hash"]: e for e in coverage["transactions"]["errors"] if "hash" in e
+                    }
+                    for tx in txs:
+                        if tx["status"] == "unknown" and tx["hash"] in failures:
+                            tx["receipt_error"] = failures[tx["hash"]]
+                progress.update("events")
+                events, rejected, coverage["events"] = get_events(
+                    rpc, cache, address, first, last, abi, window
+                )
+                classify_interactions(rpc, txs)
+            stable = rpc.header(last, fresh=True) == anchor and (
+                not window or rpc.header(tip, fresh=True) == (tip, tip_hash, tip_seconds)
+            )
+        else:
+            stable = rpc.header(tip, fresh=True) == (tip, tip_hash, tip_seconds)
+            for name in ("transactions", "events"):
+                coverage[name] = {"method": "empty_resolved_range", "complete": True, "gaps": []}
+        if not stable:
+            time_gaps.append({"reason": "snapshot_changed"})
+        for name in ("events", "transactions"):
+            coverage[name]["gaps"].extend(time_gaps)
+            coverage[name]["complete"] &= not time_gaps
+        unknown = [tx["hash"] for tx in txs if tx["status"] == "unknown"]
+        coverage["receipts"] = {
+            "complete": coverage["transactions"]["complete"] and not unknown,
+            "unknown_transaction_hashes": unknown,
+            "gaps": list(time_gaps),
+        }
+        if args.abi_file:
+            coverage["abi"] = {
+                "loaded": abi is not None,
+                "decoded": sum(e["abi"] is not None for e in events),
+                "decode_failed": sum("abi_decode_failed" in e["issues"] for e in events),
+            }
+        coverage["complete"] = not errors and all(
+            coverage[k]["complete"] for k in ("transactions", "events", "receipts")
+        )
+    except (QueryError, ValueError, OverflowError, OSError) as error:
+        stable = False
+        errors.append(
+            error.detail()
+            if isinstance(error, QueryError)
+            else {
+                "category": "invalid_response",
+                "error": "Could not validate query inputs or response",
+            }
+        )
+        for name in ("transactions", "events", "receipts"):
+            coverage[name]["complete"] = False
+            coverage[name]["gaps"].append({"reason": errors[-1]["category"]})
+    finally:
+        progress.finish()
+        if isinstance(raw_client, Client):
+            source["performance"] = raw_client.diagnostics()
+            raw_client.close()
+    if not stable:
+        coverage["transactions"]["observed"] = False
+    analytics = analyze(
+        address,
+        txs if stable and coverage["transactions"].get("usable", True) else [],
+        events if stable else [],
+        *(complete_day_range if stable else (None, None)),
+        coverage,
+    )
+    evidence = cache.export(txs, events, rejected, stable)
+    return {
+        "schema_version": "2.0",
+        "coverage": coverage,
+        "errors": errors,
+        "report": generate(address, requested, resolved, source, coverage, evidence, analytics),
+    }

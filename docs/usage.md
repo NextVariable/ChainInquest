@@ -2,9 +2,9 @@
 
 [![自动测试 / CI](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml)
 
-核查钱包与合约地址的链上交易活动，输出成功状态、原生币金额、直接交互集中度和可追溯证据。目前支持 Monad 测试网。只读、无需连接钱包、无需付费 API 密钥；运行只依赖 Python 3.10+ 标准库，curl 是可选传输。它扫描顶层交易，核对回执和区块身份，以整数 wei 计算成功交易金额，并明确说明漏查、未知状态和统计边界。
+核查钱包与合约地址的链上交易活动，输出成功状态、原生币金额、直接交互集中度和可追溯证据。目前支持 Monad 测试网。只读、无需连接钱包、基础区块查询无需 API 密钥；默认运行只依赖 Python 3.10+ 标准库，curl 是可选传输。它扫描顶层交易，核对回执和区块身份，以整数 wei 计算成功交易金额，并明确说明漏查、未知状态和统计边界。
 
-Inspect on-chain wallet and contract activity, including transaction outcomes, native-coin amounts, direct-interaction concentration, and traceable evidence. Currently supports Monad Testnet. Read-only, with no wallet connection or paid API key required. Runtime uses only the Python 3.10+ standard library; curl is optional. The scanner validates top-level transactions, receipts, and block identities, calculates amounts in integer wei, and discloses gaps and unknown statuses.
+Inspect on-chain wallet and contract activity, including transaction outcomes, native-coin amounts, direct-interaction concentration, and traceable evidence. Currently supports Monad Testnet. Read-only, with no wallet connection. Basic block queries do not require an API key. Default runtime uses the Python 3.10+ standard library; curl is optional. The scanner validates top-level transactions, receipts, and block identities, calculates amounts in integer wei, and discloses gaps and unknown statuses.
 
 调用集中度回答的是“本范围内哪些地址直接向目标发送交易，以及各占多少”，不能据此证明真人用户量、刷量或商业采用。测试网数据也不能代表主网使用情况。
 
@@ -74,9 +74,19 @@ Check `coverage.complete`, `coverage.chain_consistent`, `errors`, failed blocks,
 
 The `caller_ranking` denominator includes every retrieved top-level transaction directly sent to the target, including failed, unknown, and ordinary transfers. Nonempty input is reported separately and does not establish a valid function call or a human user. Explorer links are verification entrypoints, not proof of browser inspection. See the linked scope and runtime references for full definitions.
 
-本版不覆盖内部调用、代币转账、间接调用、完整历史、按天查询或目标新建合约追踪。没有 ABI/trace，不推测具体函数、revert 原因或内部资金路径；不会签名、发交易或执行支付。
+## 调查报告 / Investigation reports
 
-This version excludes internal calls, token transfers, indirect calls, complete history, date-based queries, and tracking creation of the target contract. Without ABI or traces, it does not infer function names, revert reasons, or internal fund flows. It does not sign, send transactions, or pay.
+```sh
+python3 skills/onchain-address-inspector/scripts/query.py \
+  --address 0x000000000000000000000000000000000000dEaD \
+  --days 7 --total-timeout 120 --progress
+```
+
+可用 `--days 30` 或一对带时区的 `--from-time`、`--to-time`。仅查区块时加 `--investigate` 可获得同样的报告结构。输入超过 1000 块时，可通过环境变量 `ETHERSCAN_API_KEY` 启用 Etherscan V2 历史顶层交易候选查询。事件仍由 RPC 查询。索引没有可核实的覆盖水位，结果不会标为完整历史。
+
+Use `--days 30` or an explicit pair of timestamps with offsets. For block ranges, opt in with `--investigate`. Configure `ETHERSCAN_API_KEY` in the environment to discover historical transaction candidates beyond 1000 blocks. The RPC supplies logs, block data, and receipt evidence. The index does not attest its coverage watermark.
+
+[调查报告字段、ABI 清单和统计口径 / Report fields, ABI manifest and definitions](../skills/onchain-address-inspector/references/investigation.md).
 
 ## 验证与开发 / Validation and development
 

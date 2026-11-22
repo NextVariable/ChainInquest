@@ -103,7 +103,7 @@ def metrics(txs, address):
     }
 
 
-def parse_block(b, n, address):
+def parse_block(b, n, address, *, raw=False):
     """Validate a full block before selecting related top-level transactions."""
     try:
         if not b or quantity(b["number"]) != n or not re.fullmatch(r"0x[0-9a-fA-F]{64}", b["hash"]):
@@ -118,6 +118,8 @@ def parse_block(b, n, address):
             quantity(b["timestamp"]), datetime.timezone.utc
         ).isoformat()
         found = []
+        unrelated_hashes = set()
+        related_hashes = set()
         for t in b["transactions"]:
             if not isinstance(t, dict):
                 raise QueryError("未返回完整交易对象")
@@ -139,7 +141,13 @@ def parse_block(b, n, address):
                 raise QueryError("非法交易哈希")
             value = quantity(t["value"])
             if f != address and to != address:
+                if h in unrelated_hashes or h in related_hashes:
+                    raise QueryError("duplicate transaction in block", "invalid_block")
+                unrelated_hashes.add(h)
                 continue
+            if h in unrelated_hashes:
+                raise QueryError("conflicting transaction in block", "invalid_block")
+            related_hashes.add(h)
             input_data = t.get("input")
             has_input_data = (
                 (len(input_data) > 2)
@@ -165,6 +173,7 @@ def parse_block(b, n, address):
                     "has_input_data": has_input_data,
                     "status": "unknown",
                     "explorer_url": EXPLORER + h,
+                    **({"raw_transaction": t} if raw else {}),
                 }
             )
         return found, header

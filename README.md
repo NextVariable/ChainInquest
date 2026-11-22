@@ -31,11 +31,13 @@ python3 skills/onchain-address-inspector/scripts/query.py \
 
 默认最近 100 块、总预算 120 秒，上限 1000 块。大范围需明确增加预算，例如 `--total-timeout 600`；公共 RPC 无法保证完成。stdout 输出 JSON，stderr 输出进度。完整结果退出码为 0，参数错误或查询不完整为 2。
 
+调查模式支持 ERC-20 形状的 Transfer/Approval、UTC 每日趋势和结构化证据报告。用 `--investigate` 扩展原区块命令，或用 `--days 7`、`--days 30`、`--from-time/--to-time` 查询时间窗口。长窗口依赖索引候选和 RPC 证据，结果会标出覆盖缺口。
+
 ## 结果与边界
 
 先看 `coverage.complete`、`coverage.chain_consistent` 和 `errors`。部分扫描只描述已获取样本；`metrics=null` 表示无法可靠汇总，未知回执不等于交易失败。金额以整数 wei 计算，仅统计成功交易的顶层 value。
 
-直接发起地址集中度包括普通转入、失败和未知状态，不证明真人用户量、刷量或商业采用。本版不覆盖主网、完整历史、内部调用、代币转账或间接交互。详细参数与口径见[使用说明](docs/usage.md)和[统计边界](skills/onchain-address-inspector/references/sources-and-scope.md)。
+直接发起地址集中度包括普通转入、失败和未知状态，不证明真人用户量、刷量或商业采用。调查模式区分顶层原生币金额与代币事件。主网、完整历史、内部调用和间接交互仍超出覆盖范围。详细参数与口径见[使用说明](docs/usage.md)和[统计边界](skills/onchain-address-inspector/references/sources-and-scope.md)。
 
 ## 开发
 

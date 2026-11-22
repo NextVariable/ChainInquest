@@ -122,7 +122,9 @@ def scan(args, client=None):
         "schema_version": "1.7",
         "network": "Monad Testnet",
         "chain_id": None,
-        "address": args.address.lower(),
+        "address": args.address.lower()
+        if re.fullmatch(r"0x[0-9a-fA-F]{40}", args.address)
+        else None,
         "requested_range": {
             "start_block": args.start_block,
             "end_block": args.end_block,
@@ -204,7 +206,7 @@ def scan(args, client=None):
         def read_block(n):
             try:
                 b = c.call("eth_getBlockByNumber", [hex(n), True])
-                found, header = parse_block(b, n, address)
+                found, header = parse_block(b, n, address, raw=getattr(args, "investigate", False))
                 return n, found, header, None
             except QueryError as e:
                 return n, [], None, e.detail()
@@ -268,7 +270,9 @@ def scan(args, client=None):
                 or not re.fullmatch(r"0x[0-9a-fA-F]{64}", ending["hash"])
             ):
                 raise QueryError("结束区块复查响应无效", "invalid_block")
-            if scanned_end and ending["hash"].lower() != scanned_end["hash"]:
+            if scanned_end is None:
+                raise QueryError("未取得结束区块，无法确认扫描快照", "missing_end_block")
+            if ending["hash"].lower() != scanned_end["hash"]:
                 raise QueryError("结束区块在扫描期间发生变化", "chain_mismatch")
         except QueryError as e:
             consistency_errors.append(e.detail())
@@ -452,14 +456,32 @@ def parser():
         action="store_true",
         help="向 stderr 输出脱敏进度及每 5 秒心跳；stdout 保持 JSON",
     )
+    p.add_argument("--investigate", action="store_true")
+    p.add_argument("--days", type=int, choices=[7, 30])
+    p.add_argument("--from-time")
+    p.add_argument("--to-time")
+    p.add_argument("--abi-file")
     return p
 
 
-if __name__ == "__main__":
+def main():
     try:
-        result = scan(parser().parse_args())
+        args = parser().parse_args()
+        if args.investigate or any(
+            value is not None for value in (args.days, args.from_time, args.to_time, args.abi_file)
+        ):
+            from investigation import investigate
+
+            args.investigate = True
+            result = investigate(args)
+        else:
+            result = scan(args)
     except QueryError as e:
         result = scan(parser().parse_args(["--address", ""]))
         result["errors"] = [e.detail()]
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    sys.exit(0 if result["coverage"]["complete"] else 2)
+    return 0 if result["coverage"]["complete"] else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

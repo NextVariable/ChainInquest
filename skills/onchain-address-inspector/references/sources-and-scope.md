@@ -32,7 +32,7 @@ Native amounts use integer wei and successful top-level value only, excluding ga
 
 Transactions deduplicate by hash before receipts and metrics. Identical duplicates retain one; conflicts exclude that hash. Both mark the query incomplete. The raw fingerprint is SHA-256 of sorted JSON to detect hidden field differences, not a chain transaction hash or cryptographic verification. Partial queries describe retrieved samples; complete conflict exclusion yields null metrics, not zero or failed activity.
 
-更早修订口径保存在仓库docs/history/sources-and-scope-v1.6.md；此安装包提供当前口径，不依赖仓库外文件运行。
+调查模式口径见[调查模式](investigation.md)。安装包提供当前口径，不依赖仓库外文件运行。
 
 
 Earlier definitions remain in the repository’s version 1.6 history document. This installation package provides current definitions and does not depend on external repository files at runtime.

@@ -17,6 +17,9 @@ READ_METHODS = frozenset(
         "eth_getBlockByNumber",
         "eth_getTransactionReceipt",
         "eth_getCode",
+        "eth_getLogs",
+        "eth_getTransactionByHash",
+        "eth_call",
     }
 )
 
