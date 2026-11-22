@@ -116,8 +116,26 @@ def plan_investigation(request, now=None):
         ) from None
 
 
+RETRYABLE = {
+    "index_transport",
+    "index_http_error",
+    "rpc_transport",
+    "rpc_http_error",
+    "timeout",
+    "partial_address_report",
+}
+
+
+def window_days(plan):
+    ranges = list(plan["ranges"].values())
+    if not ranges or "from_time" not in ranges[0]:
+        return 0
+    span = parse_time(ranges[0]["to_time"]) - parse_time(ranges[0]["from_time"])
+    return round(span.total_seconds() / 86400)
+
+
 def plan_objective(request, objective):
-    from planner import select
+    from planner import build, select
 
     if not isinstance(request, dict):
         raise QueryError("Invalid project request", "invalid_plan")
@@ -129,6 +147,7 @@ def plan_objective(request, objective):
         updated["scope"] = {"days": int(proposal["window"][:-1])}
     plan = plan_investigation(updated)
     plan["planner"] = meta
+    plan["plan"] = build(proposal, window_days(plan))
     return plan
 
 
@@ -138,24 +157,57 @@ def conclusions(chains, issues):
         report = result["report"]
         metrics = report["deterministic_metrics"]
         if metrics and result.get("analysis") is not None:
-            facts.append(
-                {
-                    "chain_id": chain_id,
-                    "scope": "observed_evidence",
-                    "transactions": metrics["transactions"],
-                    "events": metrics["events"],
-                    "proof": report["calculation"]["transaction_refs"]
-                    + report["calculation"]["event_refs"],
-                    "coverage_complete": result["coverage"]["complete"],
-                }
+            complete = result["coverage"]["complete"]
+            observed_zero = not (
+                report["calculation"]["transaction_refs"] or report["calculation"]["event_refs"]
             )
+            if observed_zero and not complete:
+                unknown.append(
+                    {
+                        "chain_id": chain_id,
+                        "scope": "activity_counts",
+                        "reason": "coverage_incomplete_counts_withheld",
+                        "coverage_status": result["coverage"].get("status", "unknown"),
+                    }
+                )
+            else:
+                facts.append(
+                    {
+                        "chain_id": chain_id,
+                        "scope": "observed_evidence",
+                        "transactions": metrics["transactions"],
+                        "events": metrics["events"],
+                        "proof": report["calculation"]["transaction_refs"]
+                        + report["calculation"]["event_refs"],
+                        "coverage_complete": complete,
+                        "counts_are_observed_sample": not complete,
+                    }
+                )
         if result.get("analysis"):
             inferences.extend(
                 {"chain_id": chain_id, **item}
                 for item in result["analysis"]["investigation_candidates"]
             )
         unknown.extend({"chain_id": chain_id, **gap} for gap in result["coverage"]["gaps"])
-    return {"facts": facts, "inferences": inferences, "unknown": unknown + issues}
+    gaps = [item for item in unknown if "reason" in item]
+    gaps.extend({**item, "reason": item.get("category", "unknown_issue")} for item in issues)
+    return {
+        "facts": facts,
+        "inferences": inferences,
+        "unknown": unknown + issues,
+        "evidence_gaps": gaps,
+        "interpretation": {
+            "basis": "verified_evidence_only",
+            "facts": len(facts),
+            "inferences": len(inferences),
+            "unknown": len(unknown) + len(issues),
+            "coverage_complete": not gaps,
+            "note": (
+                "Counts cover verified evidence only. Unobserved ranges are unknown, "
+                "not zero activity. Inferences are labeled candidates, not facts."
+            ),
+        },
+    }
 
 
 def rpc_url(chain_id):
@@ -189,8 +241,9 @@ def query_contract(entry, bounds, seconds):
     args.concurrency = 2
     args.timeout = min(8, seconds)
     args.total_timeout = seconds
+    args.history_state_path = bounds.get("_history_path")
     for key, value in bounds.items():
-        if key != "pinned_hash":
+        if key not in {"pinned_hash", "_history_path"}:
             setattr(args, key, value)
     validate(args)
     report = investigate(args)
@@ -265,6 +318,7 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                     checkpoint(directory, state, "pinned_snapshot", pinned=pinned)
                 crosscheck_budget = max(0, min(12, int(chain_budget / 5)))
                 pending = [e for e in entries if f"{chain}-{e['address']}" not in done]
+                retryable = []
                 for offset, entry in enumerate(pending):
                     key = f"{chain}-{entry['address']}"
                     left = int(chain_deadline - time.monotonic()) - crosscheck_budget
@@ -274,10 +328,47 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                     seconds = max(2, left // (len(pending) - offset))
                     checkpoint(directory, state, "collecting", current=key)
                     try:
-                        report = query_fn(entry, pinned[chain_key], seconds)
+                        bounds = dict(pinned[chain_key])
+                        bounds["_history_path"] = str(directory / (key + ".history.json"))
+                        report = query_fn(entry, bounds, seconds)
                         write(directory / (key + ".json"), report, 16 * 1024 * 1024)
                         if report["coverage"]["complete"]:
                             done.add(key)
+                        else:
+                            issues.append({"contract": key, "category": "partial_address_report"})
+                    except QueryError as error:
+                        issues.append({"contract": key, "category": error.category})
+                        if error.category in RETRYABLE:
+                            retryable.append(entry)
+                    checkpoint(directory, state, "address_checkpoint", completed=sorted(done))
+                supplement = (
+                    (plan.get("plan") or {}).get("budget", {}).get("supplement_attempts", 0)
+                )
+                if (
+                    retryable
+                    and supplement >= 1
+                    and query_fn is query_contract
+                    and int(chain_deadline - time.monotonic()) - crosscheck_budget >= 15
+                ):
+                    entry = retryable[-1]
+                    key = f"{chain}-{entry['address']}"
+                    left = int(chain_deadline - time.monotonic()) - crosscheck_budget
+                    checkpoint(directory, state, "supplementing", current=key)
+                    try:
+                        bounds = dict(pinned[chain_key])
+                        bounds["_history_path"] = str(directory / (key + ".history.json"))
+                        report = query_fn(entry, bounds, max(15, left // 2))
+                        write(directory / (key + ".json"), report, 16 * 1024 * 1024)
+                        if report["coverage"]["complete"]:
+                            done.add(key)
+                            issues = [
+                                item
+                                for item in issues
+                                if not (
+                                    item.get("contract") == key
+                                    and item.get("category") in RETRYABLE
+                                )
+                            ]
                         else:
                             issues.append({"contract": key, "category": "partial_address_report"})
                     except QueryError as error:
@@ -319,6 +410,7 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                     "project": plan["project"],
                     "goal": plan["goal"],
                     "planner": plan.get("planner"),
+                    "plan": plan.get("plan"),
                     "conclusions": conclusions(results, issues),
                     "complete": complete,
                     "pinned": pinned,

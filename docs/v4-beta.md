@@ -18,10 +18,15 @@ Use `scope: {"days":30}` for a rolling window or `scope: {"from_time":"2026-10-0
 
 | Source | Observed behavior | V4 policy |
 | --- | --- | --- |
-| Ethereum Blockscout public | Indexing status, block tip and address page returned HTTP 200 in direct probes. The adapter matched the reported index head with RPC but the bounded address query timed out on the selected sample. | Opt-in automatically for Ethereum long ranges when no Etherscan key or operator snapshot is configured. The observed head never certifies historical completeness. |
+| Routescan public (Ethereum only) | Credential-free Etherscan-compatible API. `txlist`, `getLogs`, `getblockreward` and `getblocknobytime` were reachable without a key; `offset=1000` and a provider result window of 10,000 rows were verified. Base and Monad are not supported by this route. | Preferred for Ethereum long ranges when no operator snapshot is configured. Coverage is attested only when `getblockreward` matches the RPC header at the end block and every requested block range was paged to exhaustion. |
+| Ethereum Blockscout public | Indexing status, block tip and address page returned HTTP 200 in direct probes. The adapter matched the reported index head with RPC but the bounded address query timed out on the selected sample. | Fallback only when Routescan is unavailable and no Etherscan key or operator snapshot is configured. The observed head never certifies historical completeness. |
 | Base / Monad Testnet Blockscout public endpoints | Base returned 403. The probed Monad Testnet endpoint returned 404. | These public endpoints are outside the adapter allowlist. |
-| Etherscan V2 | Registry lists Ethereum, Base and Monad Testnet. Base requires a paid plan in the observed registry. No API key was configured. | Use the existing keyed transaction candidate adapter if available. An exhausted page does not prove a complete range. |
+| Etherscan V2 | Registry lists Ethereum, Base and Monad Testnet. Base requires a paid plan in the observed registry. No API key was configured. | Use the existing keyed transaction candidate adapter if available. An exhausted page does not prove a complete range. Base 30-day coverage is credential-blocked and reported as unknown. |
 | Dune | Documentation lists Ethereum and Base. Monad Testnet coverage and runnable query/credits were not verified. | No live integration is enabled. |
+
+Routescan coverage has two independent parts. Transactions are paged across the exact block range with a persisted queue (`CHAININQUEST_INDEX_MAX_PAGES`, default 60, maximum 200). Event discovery runs five bounded queries (emitter, Transfer/Approval in, Transfer/Approval out) and deduplicates by transaction hash and log index. Every candidate row and log is reconciled against RPC transaction, receipt, block and topic fields before it contributes to metrics. When a row omits `logIndex` or `transactionIndex`, the receipt is fetched to repair it; an unrepaired row becomes a gap. Attestation means the provider watermark matched the RPC end block and pagination was exhausted; it is not cryptographic proof that the provider omitted nothing. Base and Monad long ranges without a configured key or operator snapshot remain `unknown`, never zero.
+
+Index paging, RPC `eth_getLogs` chunks and verified-log states are checkpointed after each answered page or chunk. Resuming a job reuses the saved state; receipts are re-verified on resume. A range that hits the page or deadline budget ends as `partial` with explicit gaps.
 
 Public Blockscout requests use a process-wide 2 rps schedule, a 15-second bounded cache for small public responses, at most six address pages and up to two attempts for eligible HTTP failures. RPC rechecks included transaction and event identity. Public index metadata or a matching head cannot prove that rows were never omitted. The existing RPC limits, Etherscan bounds and investigation timeout still apply. See [Blockscout API reference](https://github.com/blockscout/blockscout-api-v2-swagger/blob/main/swagger.yaml), [Etherscan supported chains](https://docs.etherscan.io/supported-chains), and [Dune API coverage](https://dune.com/apis-and-connectors).
 
@@ -36,7 +41,9 @@ Provision this directory from an independently verified export that exhausts pag
 
 ## Planner and evidence
 
-Without model configuration, the objective is mapped deterministically to activity, flows or overview and an explicitly requested 7/30-day window, then validated and run by the investigation engine. Model planning is opt-in through both `OPENAI_API_KEY` and `CHAININQUEST_PLANNER_MODEL`. Only the objective is sent to the provider. Avoid putting secrets or sensitive context in it. The model proposes a strict goal/window object with no tool access, URL changes or membership authority. Code validates the proposed fields and the resulting deterministic plan before anyone can execute it. The preview requires confirmation, expires after five minutes and is single-use. Failure falls back to the local policy with a recorded category. Estimated cost is recorded only if rates are configured through `CHAININQUEST_MODEL_INPUT_USD_PER_M` and `CHAININQUEST_MODEL_OUTPUT_USD_PER_M`. Token usage and latency are recorded when available. The tests exercise the model transport with mocked responses. No paid model call was made for acceptance. [Structured Outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs)
+Without model configuration, the objective is mapped deterministically to activity, flows or overview and an explicitly requested 7/30-day window. The same step also derives a reviewable plan: focus areas, ordered bounded tools (scope, identity, transactions, events, corroboration, analysis, report), page/event/receipt budgets, and constraints such as manifest-only membership and "missing data is not zero activity". Code validates the proposed fields and the resulting plan before anyone can execute it. Model planning is opt-in through both `OPENAI_API_KEY` and `CHAININQUEST_PLANNER_MODEL`. Only the objective is sent to the provider. Avoid putting secrets or sensitive context in it. The model proposes a strict goal/window object with no tool access, URL changes or membership authority; it cannot change the deterministic focus, checks or budget. The preview requires confirmation, expires after five minutes and is single-use. Failure falls back to the local policy with a recorded category. Estimated cost is recorded only if rates are configured through `CHAININQUEST_MODEL_INPUT_USD_PER_M` and `CHAININQUEST_MODEL_OUTPUT_USD_PER_M`. Token usage and latency are recorded when available. The tests exercise the model transport with mocked responses. No paid model call was made for acceptance. [Structured Outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs)
+
+A job may make at most one bounded supplementary attempt after a retryable failure (`index_transport`, `index_http_error`, `rpc_transport`, `rpc_http_error`, `timeout`) when the remaining chain budget is at least 15 seconds. A successful retry replaces the earlier issue; a failed retry remains an explicit gap. Deterministic conclusions separate established facts, labeled inferences, unknowns and evidence gaps, and withhold counts when observed activity is zero but coverage is incomplete. The optional model never supplies evidence, attribution or final counts.
 
 ## Closed-beta deployment gate
 
@@ -51,6 +58,28 @@ Generate a separate unpredictable token for each tester using a cryptographic ra
 
 Deploy behind a managed TLS reverse proxy with the exact configured Host, no public listener on the backend port, a private service account and state volume, edge request-size and rate limits, and access logs that omit Authorization headers and request bodies. Do not establish forwarding or weaken proxy safeguards to work around a local failure. Verify TLS and origin checks, isolation, rotation and revocation, abort and restart behavior, and resource limits in the actual deployment before inviting users. Local security tests cover unauthorized access, cross-user reads and resumes, cross-origin writes, replayed approvals, quotas and HTML escaping. No hosted deployment was provisioned or independently security-reviewed in this sprint.
 
+### Closed-beta runbook (prepared, not executed)
+
+This runbook is documentation only. No host, DNS record, certificate or credential was created. Hosting requires explicit owner approval.
+
+1. Install Python 3.10 or newer, then `python3 -m pip install -r requirements.txt -r skills/onchain-address-inspector/requirements-abi.txt`.
+2. Generate one random token per tester locally, store only its SHA-256 digest, and deliver the token out of band. Never paste a token into a manifest, URL, report or commit.
+3. Export `CHAININQUEST_BETA_ORIGIN` and `CHAININQUEST_BETA_TOKEN_HASHES`, keep the backend bound to loopback (`python3 web/server.py --port 8080 --store /var/lib/chaininquest`), and run it under a dedicated service account with a private state volume.
+4. Terminate TLS at a managed reverse proxy, preserve the configured Host header, enforce request-size and rate limits, and scrub `Authorization` and request bodies from access logs.
+5. Before inviting testers, verify: unauthenticated preview/job/report/export requests are rejected; one tester cannot read or resume another tester's job; cross-origin writes are rejected; approvals expire and cannot be replayed; restart preserves completed jobs and resume state; storage and concurrency limits hold; token rotation revokes the old digest.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `CHAININQUEST_BETA_ORIGIN` | Exact HTTPS origin allowed for browser writes | unset (loopback only) |
+| `CHAININQUEST_BETA_TOKEN_HASHES` | JSON map of account to SHA-256 token digest | unset (no accounts) |
+| `CHAININQUEST_ETHEREUM_RPC`, `CHAININQUEST_BASE_RPC`, `CHAININQUEST_MONAD_RPC` | Chain RPC overrides on the allowlist | built-in public endpoints |
+| `CHAININQUEST_INDEX_MAX_PAGES` | Page cap for historical index paging (1–200) | 60 |
+| `CHAININQUEST_HISTORY_STATE` | Default resume-state path for the CLI | unset |
+| `CHAININQUEST_PLANNER_MODEL`, `OPENAI_API_KEY` | Optional planner model; both required | unset (deterministic) |
+| `CHAININQUEST_MODEL_INPUT_USD_PER_M`, `CHAININQUEST_MODEL_OUTPUT_USD_PER_M` | Optional cost rates for recorded estimates | unset |
+
+All chain access is read-only. The service never signs or broadcasts transactions, and the RPC allowlist rejects unapproved hosts.
+
 ## Live acceptance and reproduction
 
 The five manifests in [examples/beta](../examples/beta) pin Ethereum block 26468359 and point to curators' primary deployment sources. PublicNode and dRPC returned the same block hash, direct transaction rows, status, raw value and event identity/data for the tested filters. Circle USDC produced 12 transactions and 171 events. Aave, ENS, Lido and Uniswap Factory had zero matching rows in that fixed block after both sources finished the bounded queries. These are short positive and empty historical windows only.
@@ -63,7 +92,32 @@ The no-model natural-language CLI run selected `flows`, verified two Circle Mona
 
 A local Chrome run exercised natural-language entry, plan preview, contract confirmation, progress, and the Aave result. The original Ethereum node returned HTTP 403; the report showed unknown activity. Reopening the same job from persisted state and resuming on dRPC completed the original one-block scope, matching the zero-activity reference. The evidence verifier passed on the recovered report.
 
-The real 30-day Aave investigation resolved Ethereum blocks 26253076–26468402 for October 23 to November 22, 2026 UTC. It reported partial coverage. The public index timed out without an attested range, and dRPC event searches returned HTTP errors and exhausted the query deadline. There were no fully answered event ranges. This is an observed provider failure, distinct from the successful offline positive/empty 30-day fixtures.
+The V4 RC report UI was exercised again in the same local browser flow with the Circle Monad example over recent blocks 81798886–81798889. The run completed with attested coverage, rendered the chain card, coverage status, metrics and the facts/inferences/unknowns sections, and showed no error banner. That window contained no activity, so the rendered zero is a proven zero, not an unknown placeholder.
+
+The real 30-day Aave investigation resolved Ethereum blocks 26253076–26468402 for October 23 to November 22, 2026 UTC. It reported partial coverage. The public index timed out without an attested range, and dRPC event searches returned HTTP errors and exhausted the query deadline. There were no fully answered event ranges. This record predates the Routescan route and remains a valid example of a provider failure being shown as partial rather than zero.
+
+## Real 30-day coverage acceptance
+
+Three Ethereum contracts were investigated over rolling 30-day windows through the credential-free Routescan route with dRPC receipts. Each result is a single-address report with attested transaction and event coverage:
+
+| Contract | Window (UTC) | Transactions | Verified events | Coverage |
+| --- | --- | --- | --- | --- |
+| Compound Timelock `0x6d903f…c33925` | 2026-10-23 07:33 – 2026-11-22 07:33 | 2 (2 success) | 40 | complete, attested |
+| Compound Governor Bravo `0xc0da02…b66529` | 2026-10-23 07:33 – 2026-11-22 07:33 | 0 | 0 | complete, attested proven zero |
+| Uniswap V3 Factory `0x1f9843…f984` | 2026-10-23 07:33 – 2026-11-22 07:33 | 18 (11 success, 7 failed) | 617 | complete, attested |
+
+The Uniswap run used watermark block 26469288 (timestamp 1795334039) verified against the RPC header, one transaction page covering the full range, all five log queries, and a complete receipt pass with zero gaps after repairing provider rows that returned `logIndex`/`transactionIndex` as `"0x"`. Timelock and Bravo reconciled every indexed row against RPC identity, value, block and receipt fields. Bravo proves that a complete zero-activity window is distinguishable from an unknown window.
+
+Reproduce one window (replace the address and dates as needed):
+
+```sh
+python3 skills/onchain-address-inspector/scripts/query.py \
+  --address 0x1F98431c8aD98523631AE4a59f267346ea31F984 \
+  --chain-id 1 --rpc https://ethereum.drpc.org --investigate --days 30 \
+  --total-timeout 600 --history-state /tmp/uniswap-30d.json
+```
+
+Base and Monad 30-day windows remain credential-blocked: Base needs a paid Etherscan V2 plan and no operator snapshot was provisioned. Those runs must report `unknown` with `index_key_required`, not zero. High-activity 30-day contracts can still end `partial` when receipt verification exhausts the per-request budget; the report preserves that status and its gaps.
 
 Reproduce the five reference comparisons from the repository root:
 
@@ -75,4 +129,4 @@ done
 python3 scripts/reconcile_beta.py artifacts examples/beta/ethereum-26468359-drpc.json
 ```
 
-The saved [reference evidence](../examples/beta/ethereum-26468359-drpc.json) contains public dRPC data for block 26468359. It records raw values and event payloads to make the comparison repeatable even when a public API is limited. The RPC rerun still depends on the configured provider. Other raw probe outputs remain ignored under `artifacts/`. Fixture, public RPC, public index, authenticated index and model transport checks are distinct. Full 30-day provider acceptance remains a release blocker.
+The saved [reference evidence](../examples/beta/ethereum-26468359-drpc.json) contains public dRPC data for block 26468359. It records raw values and event payloads to make the comparison repeatable even when a public API is limited. The RPC rerun still depends on the configured provider. Other raw probe outputs remain ignored under `artifacts/`. Fixture, public RPC, public index, authenticated index and model transport checks are distinct. Ethereum 30-day coverage has three attested live runs; Base and Monad 30-day coverage remain credential-blocked and are release gates, not completed acceptance.

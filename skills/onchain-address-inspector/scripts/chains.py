@@ -34,7 +34,7 @@ CHAINS = {
     1: Chain(
         "Ethereum Mainnet",
         "ETH",
-        "https://ethereum-rpc.publicnode.com",
+        "https://ethereum.drpc.org",
         "CHAININQUEST_ETHEREUM_RPC",
         "https://etherscan.io/tx/",
     ),

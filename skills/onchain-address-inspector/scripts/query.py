@@ -104,6 +104,15 @@ def validate(args):
             raise QueryError(f"区块范围超过上限 {MAX_BLOCKS}，未扫描")
     if args.recent_blocks is not None and not 1 <= args.recent_blocks <= MAX_BLOCKS:
         raise QueryError(f"recent-blocks 必须在 1–{MAX_BLOCKS} 之间")
+    path = getattr(args, "history_state_path", None)
+    if path is not None and (
+        not isinstance(path, str)
+        or not path
+        or len(path) > 4096
+        or any(ord(c) < 32 or ord(c) == 127 for c in path)
+        or os.path.isdir(path)
+    ):
+        raise QueryError("history-state 必须是有效的文件路径", "invalid_range")
     if not 1 <= args.concurrency <= 8 or not 1 <= args.timeout <= 60 or not 0 <= args.retries <= 2:
         raise QueryError("并发 1–8、超时 1–60 秒、重试 0–2 次")
     if not 1 <= args.total_timeout <= 600:
@@ -446,6 +455,7 @@ def parser():
     p.add_argument("--end-block", type=int)
     p.add_argument("--recent-blocks", type=int)
     p.add_argument("--rpc", default=os.environ.get("MONAD_TESTNET_RPC", RPC))
+    p.add_argument("--chain-id", type=int, choices=[1, 8453, 10143], default=CHAIN_ID)
     p.add_argument("--timeout", type=int, default=15)
     p.add_argument(
         "--total-timeout",
@@ -471,6 +481,12 @@ def parser():
     p.add_argument("--from-time")
     p.add_argument("--to-time")
     p.add_argument("--abi-file")
+    p.add_argument(
+        "--history-state",
+        dest="history_state_path",
+        default=os.environ.get("CHAININQUEST_HISTORY_STATE"),
+        help="JSON file used to checkpoint and resume long-range history paging",
+    )
     return p
 
 

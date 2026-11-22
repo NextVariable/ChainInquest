@@ -36,6 +36,102 @@ def deterministic(objective, default_goal):
     return {"goal": goal, "window": window}
 
 
+FOCUS = [
+    ("coverage", r"覆盖|完整|缺失|水位|coverage|complete|gap|watermark"),
+    ("trend", r"趋势|活跃|活动|activity|trend|daily"),
+    ("flows", r"资金|流向|转账|fund|funds|flow|flows|transfer"),
+    ("counterparties", r"对手|交易方|关联地址|counterpart|parties|address"),
+    ("events", r"事件|日志|event|events|logs"),
+    ("attribution", r"归属|确认|官方|attribution|official|verified"),
+]
+
+
+def decompose(objective, default_goal):
+    selection = deterministic(objective, default_goal)
+    focus = [name for name, pattern in FOCUS if re.search(pattern, objective, re.I)]
+    if not focus:
+        focus = ["trend", "flows", "counterparties"]
+    checks = [
+        re.sub(r"\s+", " ", part).strip()[:200]
+        for part in re.split(r"[\n?？;；]+", objective)
+        if part.strip()
+    ][:5]
+    return {
+        **selection,
+        "focus": focus,
+        "checks": checks,
+        "decomposition": "deterministic",
+    }
+
+
+def build(selection, days):
+    focus = selection.get("focus") or ["trend", "flows", "counterparties"]
+    return {
+        "objective_checks": selection.get("checks", []),
+        "focus": focus,
+        "steps": [
+            {
+                "id": "scope",
+                "tool": "rpc_head_and_manifest",
+                "purpose": "Pin the block snapshot and only use manifest-confirmed members",
+                "bounded": True,
+            },
+            {
+                "id": "identity",
+                "tool": "rpc_getCode_and_abi",
+                "purpose": "Confirm deployed code before evidence collection",
+                "bounded": True,
+            },
+            {
+                "id": "transactions",
+                "tool": "historical_transaction_index",
+                "fallback": "rpc_block_scan",
+                "purpose": "Page the exact block range to exhaustion and record coverage status",
+                "bounded": True,
+            },
+            {
+                "id": "events",
+                "tool": "historical_log_index",
+                "fallback": "rpc_getLogs",
+                "purpose": "Discover emitter and token-participation logs inside the range",
+                "bounded": True,
+            },
+            {
+                "id": "corroboration",
+                "tool": "rpc_transaction_and_receipt",
+                "purpose": "Reconcile every indexed row and log against RPC fields",
+                "bounded": True,
+            },
+            {
+                "id": "analysis",
+                "tool": "deterministic_analytics",
+                "purpose": "Derive facts only from verified evidence and mark unobserved days unknown",
+                "bounded": True,
+            },
+            {
+                "id": "report",
+                "tool": "json_and_html_report",
+                "purpose": "Separate facts, inferences, unknowns and coverage gaps",
+                "bounded": True,
+            },
+        ],
+        "budget": {
+            "window_days": days,
+            "index_pages_per_contract": 60,
+            "verified_events_per_contract": 2000,
+            "receipts_per_contract": 5000,
+            "supplement_attempts": 1,
+        },
+        "constraints": [
+            "membership_from_manifest_only",
+            "read_only_rpc",
+            "model_cannot_change_scope_budget_or_membership",
+            "no_unverified_risk_scores",
+            "missing_data_is_not_zero_activity",
+        ],
+    }
+
+
 def model_response(objective, model, key):
     body = json.dumps(
         {
@@ -116,8 +212,14 @@ def select(objective, goal="overview", *, invoke=model_response):
         raise QueryError(
             "Enter a natural-language objective of 1–1500 characters", "invalid_objective"
         )
-    fallback = deterministic(objective, goal)
-    meta = {"mode": "deterministic", "model_called": False, "tokens": None, "estimated_usd": None}
+    fallback = decompose(objective, goal)
+    meta = {
+        "mode": "deterministic",
+        "model_called": False,
+        "tokens": None,
+        "estimated_usd": None,
+        "decomposition": "deterministic",
+    }
     key, model = os.environ.get("OPENAI_API_KEY"), os.environ.get("CHAININQUEST_PLANNER_MODEL")
     if not key or not model:
         meta["reason"] = "model_not_configured"
@@ -154,7 +256,13 @@ def select(objective, goal="overview", *, invoke=model_response):
         ):
             raise ValueError
         meta["mode"] = "model_validated"
-        return proposal, meta
+        meta["decomposition"] = "model_goal_with_deterministic_plan"
+        return {
+            **proposal,
+            "focus": fallback["focus"],
+            "checks": fallback["checks"],
+            "decomposition": meta["decomposition"],
+        }, meta
     except (
         QueryError,
         TypeError,

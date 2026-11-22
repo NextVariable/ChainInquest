@@ -13,8 +13,8 @@ sys.path.insert(
 
 from evidence import QueryError
 from jobs import JobStore
-from planner import model_response, select
-from test_v3 import ContractQuery, request
+from planner import build, decompose, model_response, select
+from test_v3 import B, ContractQuery, request
 from v3 import plan_investigation, plan_objective, run
 
 
@@ -74,7 +74,8 @@ class PlannerTests(unittest.TestCase):
                 {"goal": "external", "window": "keep"},
             ):
                 plan, meta = select("inspect activity", invoke=lambda *args: response(data))
-                self.assertEqual(plan, {"goal": "activity", "window": "keep"})
+                self.assertEqual((plan["goal"], plan["window"]), ("activity", "keep"))
+                self.assertTrue(plan["focus"])
                 self.assertEqual(meta["reason"], "model_output_rejected")
             _, meta = select("activity", invoke=lambda *args: {"transport_error": "model_http_429"})
             self.assertEqual(meta["reason"], "model_http_429")
@@ -111,3 +112,64 @@ class PlannerTests(unittest.TestCase):
         req["scope"]["from_time"] = "2025-12-31T00:00:00Z"
         with self.assertRaises(QueryError):
             plan_investigation(req, now)
+
+    def test_executable_plan_is_attached_and_bounded(self):
+        selection = decompose("检查过去 30 天的资金流向和覆盖缺口", "overview")
+        self.assertEqual(selection["focus"], ["coverage", "flows"])
+        built = build(selection, 30)
+        self.assertEqual(built["budget"]["window_days"], 30)
+        self.assertEqual(
+            [step["id"] for step in built["steps"]],
+            [
+                "scope",
+                "identity",
+                "transactions",
+                "events",
+                "corroboration",
+                "analysis",
+                "report",
+            ],
+        )
+        self.assertTrue(all(step["bounded"] for step in built["steps"]))
+        self.assertIn("membership_from_manifest_only", built["constraints"])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "", "CHAININQUEST_PLANNER_MODEL": ""}):
+            plan = plan_objective(request(), "查看过去 30 天的资金流向")
+        self.assertEqual(plan["goal"], "flows")
+        self.assertEqual(plan["plan"]["budget"]["window_days"], 30)
+        self.assertFalse(plan["planner"]["model_called"])
+
+    def test_one_bounded_supplement_after_retryable_failure(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "", "CHAININQUEST_PLANNER_MODEL": ""}):
+            plan = plan_objective(request(), "查看资金流向")
+        calls = []
+        base = ContractQuery()
+
+        def flaky(entry, bounds, seconds):
+            calls.append(entry["address"])
+            if entry["address"] == B and calls.count(B) == 1:
+                raise QueryError("fixture transient", "index_transport")
+            return base(entry, bounds, seconds)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            job = store.create(plan)
+            with patch("v3.query_contract", flaky):
+                state = run(store, job, query_fn=flaky)
+            self.assertEqual(state["status"], "complete")
+            self.assertEqual(calls.count(B), 2)
+            saved = store.result(job)
+            self.assertEqual(saved["issues"], [])
+            self.assertTrue(saved["conclusions"]["interpretation"]["coverage_complete"])
+
+    def test_partial_coverage_reports_gaps_instead_of_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            job = store.create(plan_investigation(request()))
+            state = run(store, job, query_fn=ContractQuery(unavailable=B))
+            self.assertEqual(state["status"], "partial")
+            saved = store.result(job)
+            self.assertFalse(saved["conclusions"]["interpretation"]["coverage_complete"])
+            self.assertIn(
+                "timeout", {gap["reason"] for gap in saved["conclusions"]["evidence_gaps"]}
+            )
+            self.assertTrue(saved["conclusions"]["unknown"])

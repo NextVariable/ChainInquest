@@ -11,7 +11,7 @@ def analyze(address, txs, events, start_time, end_time, coverage):
     observed = bool(txs) or tx_coverage["complete"] or tx_coverage.get("observed", False)
     totals = metrics(txs, address) if observed else None
     daily = {}
-    if tx_coverage["complete"] and start_time and end_time:
+    if start_time and end_time:
         day = date.fromisoformat(start_time[:10])
         last = date.fromisoformat(end_time[:10])
         while day <= last:
@@ -65,6 +65,15 @@ def analyze(address, txs, events, start_time, end_time, coverage):
         "token_event_counts": {kind: counts[kind] for kind in ("Transfer", "Approval")}
         if events or coverage["events"]["complete"]
         else None,
+        "token_event_counts_scope": "complete"
+        if coverage["events"]["complete"]
+        else "observed_sample",
+        "daily_scope": {
+            "status": "complete"
+            if tx_coverage["complete"] and coverage["events"]["complete"]
+            else "partial",
+            "null_means_unobserved": True,
+        },
         "daily_utc": [
             {
                 "date": day,
