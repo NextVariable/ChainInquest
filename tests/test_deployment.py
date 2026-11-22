@@ -167,6 +167,10 @@ class DeploymentContractTests(unittest.TestCase):
         example = (ROOT / "deploy/beta.env.example").read_text(encoding="utf-8")
         self.assertIn(f"CHAININQUEST_STORE={self.STORE}", example)
 
+    def test_backup_archive_stays_clean_on_macos(self):
+        text = (ROOT / "deploy/backup.sh").read_text(encoding="utf-8")
+        self.assertIn("export COPYFILE_DISABLE=1", text)
+
 
 class RuntimeSafetyTests(unittest.TestCase):
     def test_job_lock_rejects_a_second_runner(self):
