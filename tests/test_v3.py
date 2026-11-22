@@ -87,6 +87,17 @@ class InvestigationJobTests(unittest.TestCase):
             project = store.result(job)["chains"]["10143"]["report"]
             self.assertEqual(project["deterministic_metrics"]["transactions"], 1)
             self.assertEqual(project["deterministic_metrics"]["events"], 3)
+            analysis = store.result(job)["chains"]["10143"]["analysis"]
+            facts = analysis["graph"]["facts"]
+            self.assertTrue(
+                any(edge["relation"] == "successful_top_level_native_value" for edge in facts)
+            )
+            self.assertEqual(
+                sum(edge["relation"] == "erc20_shaped_transfer_log" for edge in facts), 1
+            )
+            self.assertTrue(all(e["evidence_ref"] in project["evidence_index"] for e in facts))
+            self.assertEqual(analysis["graph"]["inferred_relationships"], [])
+
             self.assertTrue(
                 project["deployments"][0]["contracts"][0]["coverage"]["contract_identity"][
                     "bytecode_present"

@@ -9,11 +9,13 @@ from pathlib import Path
 
 from adapters import RpcAdapter
 from chains import CHAINS
+from corroboration import corroborate
 from evidence import QueryError, quantity
 from investigation import investigate
 from jobs import JobStore, checkpoint, write
 from project import contracts, investigate_project, load_json
 from query import parser, validate
+from relationships import enrich
 from rpc_client import Client
 
 MAX_CONTRACTS = 8
@@ -179,7 +181,14 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
         done = set(state["completed"])
         issues = []
         results = {}
-        checkpoint(directory, state, "planning", status="running", attempts=state["attempts"] + 1)
+        checkpoint(
+            directory,
+            state,
+            "planning",
+            status="running",
+            attempts=state["attempts"] + 1,
+            result_ready=False,
+        )
         try:
             for position, (chain_key, initial) in enumerate(plan["ranges"].items()):
                 chain_budget = (deadline - time.monotonic()) / (len(plan["ranges"]) - position)
@@ -199,10 +208,11 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                         issues.append({"chain_id": chain, "category": error.category})
                         continue
                     checkpoint(directory, state, "pinned_snapshot", pinned=pinned)
+                crosscheck_budget = max(0, min(12, int(chain_budget / 5)))
                 pending = [e for e in entries if f"{chain}-{e['address']}" not in done]
                 for offset, entry in enumerate(pending):
                     key = f"{chain}-{entry['address']}"
-                    left = int(chain_deadline - time.monotonic())
+                    left = int(chain_deadline - time.monotonic()) - crosscheck_budget
                     if left < 2:
                         issues.append({"contract": key, "category": "investigation_budget"})
                         break
@@ -223,6 +233,24 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                 results[chain_key] = investigate_project(
                     path, chain_id=chain, require_verified_code=True
                 )
+                checkpoint(directory, state, "cross_checking", current=chain_key)
+                comparison = corroborate(
+                    chain,
+                    results[chain_key],
+                    max(0, min(crosscheck_budget, int(chain_deadline - time.monotonic()))),
+                )
+                results[chain_key]["cross_check"] = comparison
+                if comparison["status"] == "disagreement":
+                    results[chain_key]["coverage"]["complete"] = False
+                    results[chain_key]["coverage"]["gaps"].append(
+                        {"reason": "secondary_provider_disagreement"}
+                    )
+                    issues.append(
+                        {"chain_id": chain, "category": "secondary_provider_disagreement"}
+                    )
+                    results[chain_key]["analysis"] = None
+                else:
+                    results[chain_key]["analysis"] = enrich(chain, results[chain_key])
             complete = (
                 all(r["coverage"]["complete"] for r in results.values())
                 and len(results) == len(plan["ranges"])

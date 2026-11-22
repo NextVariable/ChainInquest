@@ -62,9 +62,11 @@ def verify_project(result):
         if addr not in perimeter:
             return False
         c = contracts[addr]
-        return t["block"] >= c["deployment_block"] and dt.datetime.fromisoformat(
-            t["timestamp"]
-        ) >= dt.datetime.fromisoformat(c["deployed_at"])
+        return (c["deployment_block"] is None or t["block"] >= c["deployment_block"]) and (
+            c["deployed_at"] is None
+            or dt.datetime.fromisoformat(t["timestamp"])
+            >= dt.datetime.fromisoformat(c["deployed_at"])
+        )
 
     assert stats["transactions"] == len({row["hash"] for row in txs}) == len(txs)
     assert (
@@ -160,6 +162,26 @@ def verify_investigation(result):
 
 def verify(path):
     result = json.loads(path.read_text())
+    if result.get("schema_version") == "investigation-3":
+        chains = {}
+        for key, chain in result["chains"].items():
+            chains[key] = verify_project(chain)
+            analysis = chain.get("analysis")
+            if not analysis:
+                continue
+            graph = analysis["graph"]
+            catalog = chain["report"]["evidence_index"]
+            for edge in graph["facts"]:
+                assert edge["from"] in graph["nodes"] and edge["to"] in graph["nodes"]
+                assert edge["evidence_ref"] in catalog
+            for candidate in analysis["investigation_candidates"]:
+                assert all(ref in catalog for ref in candidate["evidence_refs"])
+        assert not result["complete"] or all(c["complete"] for c in chains.values())
+        return {
+            "schema_version": "investigation-3",
+            "complete": result["complete"],
+            "chains": chains,
+        }
     if result.get("schema_version") == "project-2.1":
         return verify_project(result)
     if result.get("schema_version") == "2.0":
