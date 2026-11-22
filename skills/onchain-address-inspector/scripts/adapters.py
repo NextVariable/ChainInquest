@@ -287,6 +287,7 @@ class EtherscanAdapter:
         if (
             not isinstance(state, dict)
             or state.get("schema_version") != 1
+            or state.get("provider") != "etherscan_v2_txlist"
             or state.get("address") != address
             or state.get("start_block") != start
             or state.get("end_block") != end
@@ -303,7 +304,15 @@ class EtherscanAdapter:
                 "done": False,
             }
         rows = state["rows"]
-        gaps = state["gaps"]
+        # Only structural gaps persist. Deadline and page-budget limits belong to
+        # the current run; replaying them after a successful resume would be stale.
+        gaps = [
+            gap
+            for gap in state.get("gaps", [])
+            if gap.get("reason") not in {"index_deadline", "index_page_budget"}
+        ]
+        transient = []
+        state["gaps"] = gaps
         seen = {row[0] for row in rows if isinstance(row, list) and len(row) == 3}
         last = max(
             (row[1] for row in rows if isinstance(row, list) and len(row) == 3), default=start
@@ -316,7 +325,7 @@ class EtherscanAdapter:
         page = state.get("next_page", 1)
         while page <= cap:
             if self.client is not None and self.client.remaining() <= 1:
-                gaps.append({"reason": "index_deadline", "page": page})
+                transient.append({"reason": "index_deadline", "page": page})
                 break
             try:
                 items = self.page(address, start, end, page)
@@ -349,10 +358,10 @@ class EtherscanAdapter:
                 if save:
                     save(state)
             except QueryError as error:
-                gaps.append({"reason": error.category, "page": page})
+                transient.append({"reason": error.category, "page": page})
                 break
         if page > cap and not state["done"]:
-            gaps.append({"reason": "index_page_budget", "page": page})
+            transient.append({"reason": "index_page_budget", "page": page})
         self.coverage = {
             "provider": "etherscan_v2_txlist",
             "basis": "pagination_without_provider_watermark",
@@ -364,8 +373,8 @@ class EtherscanAdapter:
                 "terminal": state["done"],
             },
             "coverage_scope": "Provider txlist; no indexed-through height attestation",
-            "gaps": gaps,
+            "gaps": gaps + transient,
         }
         if save:
             save(state)
-        return [(row[0], row[1], row[2]) for row in rows], gaps
+        return [(row[0], row[1], row[2]) for row in rows], gaps + transient

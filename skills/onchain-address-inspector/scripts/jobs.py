@@ -65,13 +65,19 @@ class JobStore:
         return job_id
 
     def state(self, job_id):
-        return load_json(self.directory(job_id) / "state.json", 1024 * 1024)[0]
+        value = load_json(self.directory(job_id) / "state.json", 1024 * 1024)[0]
+        if not isinstance(value, dict):
+            raise QueryError("Investigation state file is malformed", "invalid_job")
+        return value
 
     def result(self, job_id):
         directory = self.directory(job_id)
         if not self.state(job_id)["result_ready"]:
             raise QueryError("Investigation result is not ready", "not_ready")
-        return load_json(directory / "result.json", MAX_RESULT_BYTES)[0]
+        value = load_json(directory / "result.json", MAX_RESULT_BYTES)[0]
+        if not isinstance(value, dict):
+            raise QueryError("Investigation result file is malformed", "invalid_job")
+        return value
 
     @contextmanager
     def runner(self, job_id):

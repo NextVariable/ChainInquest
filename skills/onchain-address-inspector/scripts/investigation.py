@@ -42,7 +42,10 @@ def timestamp(value):
 
 
 def history_saver(path):
-    """Load and atomically persist per-address history progress."""
+    """Load and atomically persist per-address history progress.
+
+    One writer per state path is expected; a shared path is last-writer-wins.
+    """
     if not path:
         return None, None
     document = None
@@ -71,6 +74,8 @@ def history_saver(path):
             try:
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                     handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 os.replace(temporary, target)
             except BaseException:
                 try:
@@ -78,9 +83,14 @@ def history_saver(path):
                 except OSError:
                     pass
                 raise
-        except (OSError, ValueError, RecursionError):
+        except (OSError, ValueError, RecursionError) as error:
+            # Latch the failure for this run but keep the reason observable.
             failed = True
+            save.failures += 1
+            save.last_error = type(error).__name__
 
+    save.failures = 0
+    save.last_error = None
     return document, save
 
 
@@ -760,6 +770,15 @@ def investigate(args, client=None, index=None, now=None):
             native = analytics["transactions"]["native_value_successful_top_level_only"]
             for direction in ("in", "out"):
                 native[f"{direction}_native"] = native.pop(f"{direction}_mon")
+    # A failed checkpoint write does not invalidate verified data, but it must be
+    # visible: a later resume would restart from an older checkpoint.
+    if persist is not None and getattr(persist, "failures", 0):
+        coverage["persistence"] = {
+            "saved": False,
+            "failures": persist.failures,
+            "last_error": persist.last_error,
+        }
+        coverage.setdefault("gaps", []).append({"reason": "history_state_persist_failed"})
     finalize_coverage(coverage)
     evidence = cache.export(txs, events, rejected, stable)
     return {
