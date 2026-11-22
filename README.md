@@ -33,6 +33,8 @@ python3 skills/onchain-address-inspector/scripts/query.py \
 
 调查模式支持 ERC-20 形状的 Transfer/Approval、UTC 每日趋势和结构化证据报告。用 `--investigate` 扩展原区块命令，或用 `--days 7`、`--days 30`、`--from-time/--to-time` 查询时间窗口。长窗口依赖索引候选和 RPC 证据，结果会标出覆盖缺口。
 
+V2.1 可用 `--project-file` 汇总已确认合约的同一快照，去重后生成项目调查报告。仓库与显示名为 **ChainInquest**，Skill 调用名为 `$onchain-address-inspector`。 [Project manifest](skills/onchain-address-inspector/references/project.md).
+
 ## 结果与边界
 
 先看 `coverage.complete`、`coverage.chain_consistent` 和 `errors`。部分扫描只描述已获取样本；`metrics=null` 表示无法可靠汇总，未知回执不等于交易失败。金额以整数 wei 计算，仅统计成功交易的顶层 value。

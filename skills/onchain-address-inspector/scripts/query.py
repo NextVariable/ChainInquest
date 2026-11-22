@@ -30,6 +30,14 @@ DEFAULT_BLOCKS = 100
 MAX_RECEIPTS = 5000
 
 
+def rpc_profile(url):
+    return {
+        RPC: "Monad Foundation public testnet",
+        "https://testnet-rpc.monad.xyz": "QuickNode public testnet",
+        "https://rpc.ankr.com/monad_testnet": "Ankr public testnet",
+    }.get(url, "custom endpoint (URL omitted)")
+
+
 class Progress:
     """Operational progress on stderr; stdout remains one JSON document."""
 
@@ -153,11 +161,7 @@ def scan(args, client=None):
         "errors": [],
         "source": {
             "rpc": "configured endpoint (URL omitted)",
-            "rpc_profile": {
-                RPC: "Monad Foundation public testnet",
-                "https://testnet-rpc.monad.xyz": "QuickNode public testnet",
-                "https://rpc.ankr.com/monad_testnet": "Ankr public testnet",
-            }.get(args.rpc, "custom endpoint (URL omitted)"),
+            "rpc_profile": rpc_profile(args.rpc),
             "explorer": EXPLORER,
         },
         "code_at_end_block": None,
@@ -431,7 +435,11 @@ class JsonArgumentParser(argparse.ArgumentParser):
 
 def parser():
     p = JsonArgumentParser(description=__doc__)
-    p.add_argument("--address", required=True)
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--address")
+    target.add_argument(
+        "--project-file", help="Aggregate saved reports from a local project manifest"
+    )
     p.add_argument("--start-block", type=int)
     p.add_argument("--end-block", type=int)
     p.add_argument("--recent-blocks", type=int)
@@ -467,7 +475,24 @@ def parser():
 def main():
     try:
         args = parser().parse_args()
-        if args.investigate or any(
+        if args.project_file is not None:
+            from project import investigate_project
+
+            if args.investigate or any(
+                value is not None
+                for value in (
+                    args.start_block,
+                    args.end_block,
+                    args.recent_blocks,
+                    args.days,
+                    args.from_time,
+                    args.to_time,
+                    args.abi_file,
+                )
+            ):
+                raise QueryError("--project-file derives its range from saved reports")
+            result = investigate_project(args.project_file)
+        elif args.investigate or any(
             value is not None for value in (args.days, args.from_time, args.to_time, args.abi_file)
         ):
             from investigation import investigate

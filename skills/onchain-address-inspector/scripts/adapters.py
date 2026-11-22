@@ -26,6 +26,13 @@ class RpcAdapter:
     def __init__(self, client):
         self.client = client
         self.headers = {}
+        self.log_failures = {}
+        self.log_answered_ranges = []
+        self.log_span = (
+            100
+            if getattr(client, "url", None) == "https://rpc-testnet.monadinfra.com"
+            else LOG_SPAN
+        )
 
     def call(self, method, params):
         return self.client.call(method, params)
@@ -96,9 +103,9 @@ class RpcAdapter:
             if budget <= 0 or bytes_left <= 0 or len(evidence) >= MAX_LOGS:
                 gaps.append({"from": a, "to": b, "filter": i, "reason": "log_budget"})
                 continue
-            if b - a + 1 > LOG_SPAN:
-                work.append((a + LOG_SPAN, b, i))
-                b = a + LOG_SPAN - 1
+            if b - a + 1 > self.log_span:
+                work.append((a + self.log_span, b, i))
+                b = a + self.log_span - 1
             budget -= 1
             try:
                 rows = self.call(
@@ -113,7 +120,12 @@ class RpcAdapter:
                         break
                     evidence.append((row, a, b, i))
                     bytes_left -= size
+                else:
+                    self.log_answered_ranges.append({"from": a, "to": b, "filter": i})
             except QueryError as error:
+                code = str(error) if re.fullmatch(r"RPC error code -?[0-9]+", str(error)) else None
+                label = code or error.category
+                self.log_failures[label] = self.log_failures.get(label, 0) + 1
                 if error.category in {"rpc_error", "invalid_response"} and a < b:
                     mid = (a + b) // 2
                     work.extend([(a, mid, i), (mid + 1, b, i)])
@@ -219,7 +231,21 @@ class EtherscanAdapter:
                         raise QueryError("Index order, range or pagination conflict", "index_row")
                     last = block
                     seen.add(h)
-                    rows.append((h, block))
+                    patterns = {
+                        "from": ADDRESS,
+                        "to": re.compile(r"(?:0x[0-9a-fA-F]{40})?"),
+                        "value": re.compile(r"[0-9]{1,78}"),
+                        "blockHash": HASH,
+                        "timeStamp": re.compile(r"[0-9]{1,20}"),
+                        "txreceipt_status": re.compile(r"[01]"),
+                        "isError": re.compile(r"[01]"),
+                    }
+                    claims = {
+                        key: item[key]
+                        for key, pattern in patterns.items()
+                        if isinstance(item.get(key), str) and pattern.fullmatch(item[key])
+                    }
+                    rows.append((h, block, claims))
                 if len(items) < INDEX_PAGE:
                     return rows, gaps
             except QueryError as error:

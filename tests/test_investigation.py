@@ -198,13 +198,44 @@ class InvestigationTests(unittest.TestCase):
 
     def test_index_candidates_use_rpc_and_remain_partial(self):
         adapter = EtherscanAdapter(INDEX_SECRET, None)
-        with patch.object(adapter, "page", return_value=[{"hash": H, "blockNumber": "2"}]):
+        chain = Ledger(tip=4000)
+        claims = {
+            "hash": H,
+            "blockNumber": "2",
+            "blockHash": chain.tx["blockHash"],
+            "from": B,
+            "to": A,
+            "value": str(10**18),
+            "timeStamp": str(STAMP + 2),
+            "txreceipt_status": "1",
+            "isError": "0",
+        }
+        with patch.object(adapter, "page", return_value=[claims]):
             result = investigate(
+                args("--from-time", iso(STAMP), "--to-time", iso(STAMP + 3000)),
+                chain,
+                adapter,
+                now=STAMP + 4000,
+            )
+        with patch.object(
+            adapter, "page", return_value=[{**claims, "value": "999", "isError": "1"}]
+        ):
+            conflict = investigate(
                 args("--from-time", iso(STAMP), "--to-time", iso(STAMP + 3000)),
                 Ledger(tip=4000),
                 adapter,
                 now=STAMP + 4000,
             )
+        self.assertIn(
+            "index_claim_mismatch",
+            [g["reason"] for g in conflict["coverage"]["transactions"]["gaps"]],
+        )
+        self.assertEqual(
+            conflict["report"]["deterministic_metrics"]["transactions"][
+                "native_value_successful_top_level_only"
+            ]["in_wei"],
+            str(10**18),
+        )
         coverage = result["coverage"]["transactions"]
         self.assertTrue(coverage["pagination_and_corroboration_complete"])
         self.assertFalse(coverage["complete"])
@@ -215,7 +246,7 @@ class InvestigationTests(unittest.TestCase):
         adapter = EtherscanAdapter(INDEX_SECRET, None)
         with patch.object(adapter, "page", return_value=[{"hash": H, "blockNumber": "2"}] * 2):
             rows, gaps = adapter.discover(A, 0, 3)
-        self.assertEqual(rows, [(H, 2)])
+        self.assertEqual(rows, [(H, 2, {})])
         self.assertEqual(gaps[0]["reason"], "index_row")
         with (
             patch("adapters.INDEX_PAGE", 1),
@@ -437,7 +468,7 @@ class InvestigationTests(unittest.TestCase):
             response.read.return_value = json.dumps(
                 {"status": "1", "result": [{"hash": H, "blockNumber": "2"}]}
             ).encode()
-            self.assertEqual(adapter.discover(A, 1, 3), ([(H, 2)], []))
+            self.assertEqual(adapter.discover(A, 1, 3), ([(H, 2, {})], []))
             request = connection.return_value.request.call_args.args
             self.assertEqual(request[0], "GET")
             self.assertIn("chainid=10143", request[1])

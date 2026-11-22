@@ -88,6 +88,8 @@ Use `--days 30` or an explicit pair of timestamps with offsets. For block ranges
 
 [调查报告字段、ABI 清单和统计口径 / Report fields, ABI manifest and definitions](../skills/onchain-address-inspector/references/investigation.md).
 
+用[项目清单](../skills/onchain-address-inspector/references/project.md)和 `--project-file` 在本地聚合同范围、同结束区块哈希的 V2.1 地址报告。
+
 ## 验证与开发 / Validation and development
 
 回归测试覆盖异常响应、整数金额、限速、超时、连接复用和独立安装入口，在 Python 3.10–3.14 运行。测试使用人工账本和本机服务，不需要钱包或公共 RPC：

@@ -2,15 +2,108 @@
 
 import argparse
 import collections
+import datetime as dt
 import decimal
+import hashlib
 import json
 from pathlib import Path
+
+
+def sha256_json(value):
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+def verify_references(report):
+    catalog = report["evidence_index"]
+    seen = set()
+    for group, raw_key in (
+        ("transactions", "raw_transaction"),
+        ("events", "raw_log"),
+        ("unverified_logs", "raw_log"),
+    ):
+        for position, row in enumerate(report["on_chain_evidence"].get(group, [])):
+            ref = row["evidence_ref"]
+            assert ref not in seen
+            seen.add(ref)
+            entry = catalog[ref]
+            assert entry["pointer"] == f"/on_chain_evidence/{group}/{position}"
+            assert entry["raw_sha256"] == sha256_json(row[raw_key])
+            receipt = row.get("receipt_evidence")
+            assert entry["receipt_sha256"] == (sha256_json(receipt) if receipt else None)
+    assert seen == set(catalog)
+    calculation = report["calculation"]
+    for group, key in (("transactions", "transaction_refs"), ("events", "event_refs")):
+        refs = calculation[key]
+        assert len(refs) == len(set(refs))
+        assert set(refs) <= {row["evidence_ref"] for row in report["on_chain_evidence"][group]}
+
+
+def verify_project(result):
+    report = result["report"]
+    verify_references(report)
+    stats = report["deterministic_metrics"]
+    evidence = report["on_chain_evidence"]
+    txs, events = evidence["transactions"], evidence["events"]
+    if stats is None:
+        assert not txs and not events and not result["coverage"]["complete"]
+        return {"schema_version": result["schema_version"], "complete": False}
+    perimeter = set(report["calculation"]["perimeter"])
+    contracts = {c["address"]: c for d in report["deployments"] for c in d["contracts"]}
+    assert perimeter == {
+        address for address, c in contracts.items() if c["attribution"]["status"] == "confirmed"
+    }
+
+    def active(t, endpoint):
+        addr = t[endpoint]
+        if addr not in perimeter:
+            return False
+        c = contracts[addr]
+        return t["block"] >= c["deployment_block"] and dt.datetime.fromisoformat(
+            t["timestamp"]
+        ) >= dt.datetime.fromisoformat(c["deployed_at"])
+
+    assert stats["transactions"] == len({row["hash"] for row in txs}) == len(txs)
+    assert (
+        stats["events"] == len({(row["block"], row["log_index"]) for row in events}) == len(events)
+    )
+    assert all(
+        stats["status"][status] == sum(t["status"] == status for t in txs)
+        for status in ("success", "failed", "unknown")
+    )
+    for direction, match in (
+        ("in", lambda a, b: not a and b),
+        ("out", lambda a, b: a and not b),
+        ("internal", lambda a, b: a and b),
+    ):
+        value = sum(
+            int(t["raw_transaction"]["value"], 16)
+            for t in txs
+            if t["status"] == "success" and match(active(t, "from"), active(t, "to"))
+        )
+        assert stats["successful_native_value_wei"][direction] == str(value)
+    assert all(
+        stats["token_event_counts"][kind]
+        == sum(bool(e["token"]) and e["token"]["kind"] == kind for e in events)
+        for kind in ("Transfer", "Approval")
+    )
+    return {
+        "schema_version": result["schema_version"],
+        "transactions": len(txs),
+        "events": len(events),
+        "complete": result["coverage"]["complete"],
+    }
 
 
 def verify_investigation(result):
     report = result["report"]
     evidence = report["on_chain_evidence"]
     computed = report["deterministic_metrics"]
+    if "evidence_index" in report:
+        verify_references(report)
     txs = evidence["transactions"]
     events = evidence["events"]
     if not evidence["snapshot_checked"]:
@@ -67,6 +160,8 @@ def verify_investigation(result):
 
 def verify(path):
     result = json.loads(path.read_text())
+    if result.get("schema_version") == "project-2.1":
+        return verify_project(result)
     if result.get("schema_version") == "2.0":
         return verify_investigation(result)
     txs = result["transactions"]

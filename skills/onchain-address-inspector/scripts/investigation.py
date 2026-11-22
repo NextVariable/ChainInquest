@@ -2,6 +2,7 @@
 
 import datetime as dt
 import os
+import time
 from copy import copy
 
 from adapters import ADDRESS, HASH, EtherscanAdapter, RpcAdapter
@@ -14,9 +15,19 @@ from event_decoder import (
     log_fields,
     token_event,
 )
-from evidence import QueryError, apply_receipt_status, parse_block, quantity
+from evidence import QueryError, apply_receipt_status, parse_block, quantity, receipt_identity
 from evidence_store import EvidenceStore
-from query import CHAIN_ID, DEFAULT_BLOCKS, MAX_BLOCKS, MAX_RECEIPTS, Progress, scan, validate
+from query import (
+    CHAIN_ID,
+    DEFAULT_BLOCKS,
+    MAX_BLOCKS,
+    MAX_RECEIPTS,
+    Progress,
+    rpc_profile,
+    scan,
+    utc,
+    validate,
+)
 from report import generate
 from rpc_client import Client
 
@@ -114,9 +125,11 @@ def indexed_transactions(rpc, index, address, start, end):
         }
     candidates, gaps = index.discover(address, start, end)
     txs = []
-    for h, n in candidates:
+    for h, n, claims in candidates:
         try:
-            txs.append(get_transaction(rpc, h, n, address))
+            tx = get_transaction(rpc, h, n, address)
+            tx["index_comparison"] = {"claims": claims}
+            txs.append(tx)
         except QueryError as error:
             gaps.append({"hash": h, "block": n, "reason": error.category})
     # V2 does not attest an indexed-through height for txlist. Report pagination
@@ -127,6 +140,40 @@ def indexed_transactions(rpc, index, address, start, end):
         "pagination_and_corroboration_complete": not gaps,
         "gaps": gaps + [{"reason": "index_coverage_not_attested", "from": start, "to": end}],
     }
+
+
+def compare_index_claims(tx, coverage):
+    comparison = tx["index_comparison"]
+    claims = comparison["claims"]
+    actual = {
+        "from": tx["from"],
+        "to": tx["to"] or "",
+        "value": tx["value_wei"],
+        "blockHash": tx["block_hash"],
+        "timeStamp": str(int(dt.datetime.fromisoformat(tx["timestamp"]).timestamp())),
+    }
+    if tx["status"] != "unknown":
+        actual["txreceipt_status"] = "1" if tx["status"] == "success" else "0"
+        actual["isError"] = "0" if tx["status"] == "success" else "1"
+    mismatches = [
+        key for key, value in actual.items() if key in claims and claims[key].lower() != value
+    ]
+    missing = [
+        key for key in ("from", "to", "value", "blockHash", "timeStamp") if key not in claims
+    ]
+    if not ({"txreceipt_status", "isError"} & claims.keys()) or tx["status"] == "unknown":
+        missing.append("receipt_status")
+    comparison.update({"mismatches": mismatches, "unverified_fields": missing})
+    # Only the RPC-derived record contributes to sample metrics.
+    if mismatches or missing:
+        coverage["pagination_and_corroboration_complete"] = False
+        coverage["gaps"].append(
+            {
+                "reason": "index_claim_mismatch" if mismatches else "index_claim_unverified",
+                "hash": tx["hash"],
+                "fields": mismatches or missing,
+            }
+        )
 
 
 def check_event(rpc, cache, event):
@@ -150,7 +197,7 @@ def check_event(rpc, cache, event):
     ]
     if len(matches) != 1 or log_fields(matches[0]) != event:
         raise QueryError("Log is missing or conflicts with receipt", "log_mismatch")
-    return timestamp(seconds)
+    return timestamp(seconds), receipt_identity(raw_receipt)
 
 
 def token_metadata(rpc, token, block):
@@ -212,7 +259,7 @@ def get_events(rpc, cache, address, first, last, abi, window):
     events = []
     for _, (raw, sources, event) in sorted(accepted.items()):
         try:
-            stamp = check_event(rpc, cache, event)
+            stamp, matched_receipt = check_event(rpc, cache, event)
             if window and not window[0] <= rpc.header(event["block"])[2] < window[1]:
                 raise QueryError("Log timestamp falls outside requested window", "time_mismatch")
         except QueryError as error:
@@ -222,6 +269,7 @@ def get_events(rpc, cache, address, first, last, abi, window):
         entry = {
             **event,
             "raw_log": raw,
+            "receipt_evidence": matched_receipt,
             "timestamp": stamp,
             "filters": sorted(sources),
             "token": None,
@@ -238,9 +286,12 @@ def get_events(rpc, cache, address, first, last, abi, window):
             if key not in decimals:
                 try:
                     decimals[key] = token_metadata(rpc, *key)
-                except QueryError:
-                    decimals[key] = None
+                except QueryError as error:
+                    decimals[key] = error.detail()
             value = decimals[key]
+            if isinstance(value, dict):
+                entry["decimals_error"] = value
+                value = None
             token.update(
                 {
                     "decimals": value,
@@ -264,6 +315,9 @@ def get_events(rpc, cache, address, first, last, abi, window):
             "complete": not gaps,
             "filters": filters,
             "gaps": gaps,
+            "rpc_attempt_failures": rpc.log_failures,
+            "rpc_answered_ranges": rpc.log_answered_ranges,
+            "initial_log_span": rpc.log_span,
             "completeness_basis": "RPC responses, no independent omission proof",
         },
     )
@@ -299,6 +353,13 @@ def investigate(args, client=None, index=None, now=None):
     coverage["complete"] = False
     source = {
         "rpc": "configured Monad Testnet endpoint (URL omitted)",
+        "rpc_profile": rpc_profile(args.rpc),
+        "limits": {
+            "timeout_seconds": args.timeout,
+            "total_timeout_seconds": args.total_timeout,
+            "retries": args.retries,
+            "concurrency": args.concurrency,
+        },
         "chain_id": None,
         "query_started_at": timestamp(now),
     }
@@ -343,6 +404,7 @@ def investigate(args, client=None, index=None, now=None):
             raise QueryError("Expected Monad Testnet chain ID 10143", "wrong_chain")
         tip, tip_hash, tip_seconds = rpc.header("latest")
         time_gaps = []
+        progress.update("range_resolution")
         if window:
             a, b = window
             first, last = rpc.lower_bound(a, tip), rpc.lower_bound(b, tip) - 1
@@ -382,6 +444,7 @@ def investigate(args, client=None, index=None, now=None):
         }
         if first <= last:
             anchor = rpc.header(last)
+            resolved["end_block_hash"] = anchor[1]
             with rpc.reserve_snapshot_budget():
                 progress.update("transactions")
                 if last - first + 1 <= MAX_BLOCKS:
@@ -412,6 +475,7 @@ def investigate(args, client=None, index=None, now=None):
                             apply_receipt_status(cache.receipt(rpc, tx["hash"]), tx)
                         except QueryError as error:
                             tx["receipt_error"] = error.detail()
+                        compare_index_claims(tx, coverage["transactions"])
                 else:
                     failures = {
                         e["hash"]: e for e in coverage["transactions"]["errors"] if "hash" in e
@@ -424,6 +488,7 @@ def investigate(args, client=None, index=None, now=None):
                     rpc, cache, address, first, last, abi, window
                 )
                 classify_interactions(rpc, txs)
+            progress.update("snapshot")
             stable = rpc.header(last, fresh=True) == anchor and (
                 not window or rpc.header(tip, fresh=True) == (tip, tip_hash, tip_seconds)
             )
@@ -466,6 +531,8 @@ def investigate(args, client=None, index=None, now=None):
             coverage[name]["gaps"].append({"reason": errors[-1]["category"]})
     finally:
         progress.finish()
+        source["query_completed_at"] = utc()
+        source["elapsed_seconds"] = round(time.monotonic() - progress.started, 3)
         if isinstance(raw_client, Client):
             source["performance"] = raw_client.diagnostics()
             raw_client.close()
@@ -478,6 +545,15 @@ def investigate(args, client=None, index=None, now=None):
         *(complete_day_range if stable else (None, None)),
         coverage,
     )
+    coverage["token_metadata"] = {
+        "scope": "decoded ERC-20 events in the returned sample",
+        "decoded_events": sum(e["token"] is not None for e in events),
+        "historical_decimals_unavailable": [
+            {"transaction_hash": e["transaction_hash"], "log_index": e["log_index"]}
+            for e in events
+            if e.get("decimals_error")
+        ],
+    }
     evidence = cache.export(txs, events, rejected, stable)
     return {
         "schema_version": "2.0",

@@ -14,6 +14,11 @@ Convert the user’s address and block range into arguments and run `python3 scr
 
 For token activity, events, trends or a structured report, use `--investigate`. Use `--days 7`, `--days 30` or paired offset timestamps with `--from-time` and `--to-time`. Time options enable investigation mode. Read [investigation scope](references/investigation.md) first. Explain coverage for transactions, logs and receipts separately. Long-range transaction discovery needs `ETHERSCAN_API_KEY`. Without it, the event path remains available within its own budget.
 
+
+项目级调查使用 `--project-file` 聚合相同快照的已保存报告。只读取用户维护且带来源的清单，先阅读[项目清单与边界](references/project.md)。引用 `evidence_ref`，说明已确认范围、覆盖缺口和历史金额精度。ChainInquest 是显示名，既有 `$onchain-address-inspector` 调用名继续有效。
+
+For project investigation, use `--project-file` to aggregate saved comparable reports from a curated manifest. Read the [project manifest rules](references/project.md). Cite `evidence_ref` and disclose attribution, coverage, and historical token metadata gaps.
+
 查询默认整个120秒预算，所有请求、排队和重试共用截止；1000块仅区块调度间隔约200秒。未给耗时预算且范围超过500块时，运行前说明并显式使用 `--total-timeout 600`；用户给了更短预算就保留它，说明可能不完整。活跃地址还有逐笔回执工作量，不能承诺完成时间。默认auto使用标准库连接池，代理环境保留curl；不自动切换RPC。详细参数、错误诊断及performance口径在 [运行与输出说明](references/running-and-output.md)，大范围、传输或失败查询时读取它。
 
 The default total budget is 120 seconds, shared across all requests, queues, and retries. Scheduling 1000 block requests alone takes about 200 seconds. For an unspecified budget and more than 500 blocks, explain before running and explicitly use `--total-timeout 600`. Preserve any shorter user budget and explain possible incompleteness. Active addresses require receipt queries; do not promise completion time. Auto mode uses the standard-library pool or curl with proxy variables, without switching RPCs. Read [runtime and output](references/running-and-output.md) for large ranges, transport selection, or failures.

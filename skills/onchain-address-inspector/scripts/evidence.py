@@ -191,6 +191,10 @@ def parse_block(b, n, address, *, raw=False):
         raise QueryError("invalid block data", "invalid_block") from None
 
 
+def receipt_identity(receipt):
+    return {key: receipt[key] for key in ("transactionHash", "blockHash", "blockNumber", "status")}
+
+
 def apply_receipt_status(r, t):
     """Only matching receipts with status 0/1 can resolve an unknown status."""
     try:
@@ -208,6 +212,8 @@ def apply_receipt_status(r, t):
         if status not in (0, 1):
             raise QueryError("未知回执状态", "unknown_status")
         t["status"] = "success" if status else "failed"
+        if "raw_transaction" in t:
+            t["receipt_evidence"] = receipt_identity(r)
     except QueryError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):

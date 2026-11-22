@@ -33,6 +33,8 @@ Defaults: latest 100 blocks, 120-second total budget, maximum 1000 blocks. Large
 
 Investigation mode adds ERC-20-shaped Transfer/Approval events, UTC daily trends and a structured evidence report. Use `--investigate` with block arguments or request `--days 7`, `--days 30` or paired `--from-time/--to-time` timestamps. Long windows rely on index candidates and RPC evidence, with coverage gaps reported explicitly.
 
+V2.1 adds `--project-file` to aggregate saved, comparable reports for confirmed project contracts. **ChainInquest** is the repository and display name. The Skill invocation remains `$onchain-address-inspector`. [Project manifest](skills/onchain-address-inspector/references/project.md).
+
 ## Results and scope
 
 Check `coverage.complete`, `coverage.chain_consistent`, and `errors` first. Partial scans describe retrieved samples only. `metrics=null` means a reliable aggregate is unavailable; unknown receipts are not failed transactions. Native amounts use integer wei and include only successful top-level value.
