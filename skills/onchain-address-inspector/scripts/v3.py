@@ -13,7 +13,7 @@ from corroboration import corroborate
 from evidence import QueryError, quantity
 from investigation import investigate
 from jobs import JobStore, checkpoint, write
-from project import contracts, investigate_project, load_json
+from project import contracts, investigate_project, load_json, parse_time
 from query import parser, validate
 from relationships import enrich
 from rpc_client import Client
@@ -62,6 +62,19 @@ def plan_investigation(request, now=None):
                 str(i): {"from_time": start.isoformat(), "to_time": end.isoformat()}
                 for i in chain_ids
             }
+        elif set(scope) == {"from_time", "to_time"}:
+            start, end = parse_time(scope["from_time"]), parse_time(scope["to_time"])
+            if (
+                start.microsecond
+                or end.microsecond
+                or not start < end <= now
+                or end - start > dt.timedelta(days=30)
+            ):
+                raise ValueError
+            ranges = {
+                str(i): {"from_time": start.isoformat(), "to_time": end.isoformat()}
+                for i in chain_ids
+            }
         elif (
             set(scope) == {"recent_blocks"}
             and type(scope["recent_blocks"]) is int
@@ -101,6 +114,48 @@ def plan_investigation(request, now=None):
         raise QueryError(
             "Invalid project, confirmed contract, goal or query scope", "invalid_plan"
         ) from None
+
+
+def plan_objective(request, objective):
+    from planner import select
+
+    if not isinstance(request, dict):
+        raise QueryError("Invalid project request", "invalid_plan")
+    # Validate membership and original limits before issuing a model request.
+    baseline = plan_investigation(request)
+    proposal, meta = select(objective, baseline["goal"])
+    updated = {**request, "goal": proposal["goal"]}
+    if proposal["window"] != "keep":
+        updated["scope"] = {"days": int(proposal["window"][:-1])}
+    plan = plan_investigation(updated)
+    plan["planner"] = meta
+    return plan
+
+
+def conclusions(chains, issues):
+    facts, inferences, unknown = [], [], []
+    for chain_id, result in chains.items():
+        report = result["report"]
+        metrics = report["deterministic_metrics"]
+        if metrics and result.get("analysis") is not None:
+            facts.append(
+                {
+                    "chain_id": chain_id,
+                    "scope": "observed_evidence",
+                    "transactions": metrics["transactions"],
+                    "events": metrics["events"],
+                    "proof": report["calculation"]["transaction_refs"]
+                    + report["calculation"]["event_refs"],
+                    "coverage_complete": result["coverage"]["complete"],
+                }
+            )
+        if result.get("analysis"):
+            inferences.extend(
+                {"chain_id": chain_id, **item}
+                for item in result["analysis"]["investigation_candidates"]
+            )
+        unknown.extend({"chain_id": chain_id, **gap} for gap in result["coverage"]["gaps"])
+    return {"facts": facts, "inferences": inferences, "unknown": unknown + issues}
 
 
 def rpc_url(chain_id):
@@ -263,6 +318,8 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                     "id": job_id,
                     "project": plan["project"],
                     "goal": plan["goal"],
+                    "planner": plan.get("planner"),
+                    "conclusions": conclusions(results, issues),
                     "complete": complete,
                     "pinned": pinned,
                     "chains": results,
@@ -296,12 +353,24 @@ def main(argv=None):
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--input")
     mode.add_argument("--resume")
+    p.add_argument("--objective", help="Classify a natural-language investigation goal")
     args = p.parse_args(argv)
     try:
         store = JobStore(args.store)
-        job_id = args.resume or store.create(
-            plan_investigation(load_json(Path(args.input), 128 * 1024)[0])
-        )
+        if args.resume:
+            if args.objective:
+                raise QueryError(
+                    "A resumed investigation preserves its original plan", "invalid_plan"
+                )
+            job_id = args.resume
+        else:
+            request = load_json(Path(args.input), 128 * 1024)[0]
+            plan = (
+                plan_objective(request, args.objective)
+                if args.objective
+                else plan_investigation(request)
+            )
+            job_id = store.create(plan)
         print(f"Investigation {job_id}", file=sys.stderr)
         state = run(store, job_id)
         print(json.dumps(store.result(job_id) if state["result_ready"] else state, indent=2))

@@ -188,3 +188,77 @@ class InvestigationJobTests(unittest.TestCase):
                 self.assertEqual(
                     corroborate(10143, chain, 1)["reason"], "snapshot_or_budget_unavailable"
                 )
+
+    def test_cli_real_loopback_runs_recent_plan_and_reopens_checkpoint(self):
+        import json
+        import os
+        import subprocess
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                result = (
+                    "0x6000"
+                    if req["method"] == "eth_getCode"
+                    else ledger.call(req["method"], req["params"])
+                )
+                body = json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        ledger = Ledger()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            ThreadingHTTPServer(("127.0.0.1", 0), Handler) as app,
+        ):
+            thread = threading.Thread(target=app.serve_forever, daemon=True)
+            thread.start()
+            try:
+                payload = request()
+                payload["scope"] = {"recent_blocks": 2}
+                payload["manifest"]["deployments"][0]["contracts"] = payload["manifest"][
+                    "deployments"
+                ][0]["contracts"][:1]
+                f = Path(tmp) / "input.json"
+                f.write_text(json.dumps(payload))
+                env = {
+                    **os.environ,
+                    "MONAD_TESTNET_RPC": f"http://127.0.0.1:{app.server_port}",
+                    "MONAD_TESTNET_RPC_SECONDARY": "",
+                    "OPENAI_API_KEY": "",
+                    "NO_PROXY": "127.0.0.1",
+                }
+                path = Path(__file__).parents[1] / "skills/onchain-address-inspector/scripts/v3.py"
+                cmd = [sys.executable, str(path), "--store", str(Path(tmp) / "jobs")]
+                first = subprocess.run(
+                    cmd + ["--input", str(f), "--objective", "review activity"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+                self.assertEqual(first.returncode, 0, first.stdout)
+                result = json.loads(first.stdout)
+                self.assertEqual(result["pinned"]["10143"]["end_block"], 3)
+                self.assertEqual(result["conclusions"]["facts"][0]["transactions"], 1)
+                previous = len(ledger.calls)
+                reopened = subprocess.run(
+                    cmd + ["--resume", result["id"]],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(reopened.returncode, 0, reopened.stdout)
+                self.assertEqual(json.loads(reopened.stdout), result)
+                self.assertEqual(len(ledger.calls), previous)
+            finally:
+                app.shutdown()
+                thread.join()

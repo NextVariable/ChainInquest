@@ -9,7 +9,7 @@
 </head>
 <body>
   <header class="masthead">
-    <div class="frame bar"><a href="/" class="brand">Chain<span>Inquest</span></a><span class="local">Local investigation desk</span></div>
+    <div class="frame bar"><a href="/" class="brand">Chain<span>Inquest</span></a><span class="local">Investigation desk</span></div>
   </header>
   <main class="frame">
     <section class="intro">
@@ -20,19 +20,27 @@
       <section class="setup" aria-labelledby="setup-title">
         <div class="section-title"><h2 id="setup-title">Investigation scope</h2><button id="example" class="secondary" type="button">Load Circle example</button></div>
         <form id="scope-form">
+          <div id="auth" hidden>
+            <label for="access-token">Beta access token</label>
+            <input id="access-token" type="password" autocomplete="off" maxlength="128">
+            <button type="button" id="open-job" class="secondary">Open linked investigation</button>
+          </div>
+          <label for="objective">Investigation objective <span>Optional</span></label>
+          <textarea id="objective" rows="2" maxlength="1500" placeholder="Show the last 7 days of transaction activity"></textarea>
           <label for="manifest">Project request <span>JSON</span></label>
           <textarea id="manifest" rows="15" spellcheck="false" required></textarea>
-          <div class="actions"><button type="submit">Review contract list</button></div>
+          <div class="actions"><button type="submit">Preview investigation plan</button></div>
         </form>
         <div id="review" hidden>
-          <h3>Contract list</h3>
+          <h3>Confirm the plan and contracts</h3>
+          <div id="planned"></div>
           <div id="contracts"></div>
           <label class="confirm"><input type="checkbox" id="confirmed"> I reviewed the contract addresses and attribution sources.</label>
           <button type="button" id="start" disabled>Start investigation</button>
         </div>
       </section>
       <section class="output" aria-labelledby="report-title">
-        <div class="section-title"><h2 id="report-title">Investigation report</h2><a id="export" class="secondary" hidden download>Export JSON</a></div>
+        <div class="section-title"><h2 id="report-title">Investigation report</h2><div class="exports"><button id="export" class="secondary" hidden>Export JSON</button> <button id="export-html" class="secondary" hidden>Export HTML</button></div></div>
         <div id="outcome" role="status" aria-live="polite" class="status">Ready to investigate</div>
         <div class="actions" id="resume-action" hidden><button id="resume" class="secondary" type="button">Resume this investigation</button></div>
         <p id="job-id" class="job-id"></p>

@@ -67,3 +67,12 @@ a { color: var(--blue); }
   .frame { width: calc(100% - 2rem); }
   .intro { padding-top: 1.8rem; }
 }
+#objective, #auth { margin-bottom: 1rem; }
+#access-token { background: var(--canvas); color: var(--ink); border: 1px solid var(--line); padding: .55rem; border-radius: 4px; max-width: 100%; }
+.exports { display: flex; gap: .5rem; }
+.chart { margin: .9rem 0; padding: .65rem; background: var(--panel); border-left: 2px solid var(--line); }
+.chart svg { width: 100%; max-height: 130px; margin-top: .45rem; }
+.known-bar { fill: var(--blue); }
+.unknown-bar { fill: var(--line); }
+.connection { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; padding: .45rem 0; font-size: .79rem; overflow-wrap: anywhere; }
+.connection-ref { margin: 0 0 .4rem; padding-bottom: .4rem; border-bottom: 1px solid var(--line); font-size: .76rem; }

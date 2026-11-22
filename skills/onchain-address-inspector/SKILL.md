@@ -19,6 +19,8 @@ For token activity, events, trends or a structured report, use `--investigate`. 
 
 For project investigation, use `--project-file` to aggregate saved comparable reports from a curated manifest. Read the [project manifest rules](references/project.md). Cite `evidence_ref` and disclose attribution, coverage, and historical token metadata gaps.
 
+V4 可在同一项目命令加 `--objective "核查资金流向"`，先从目标提取允许的调查类型与时间范围，再执行校验后的计划。调用时坚持相同的合约确认与证据约束。按报告区分事实、推断和未知，历史水位不足时保留部分结果。
+
 V3 自动项目调查可运行 `python3 scripts/v3.py --input REQUEST.json`。输入包含人工确认的合约清单、目标与固定范围；仅 V3 支持 Base 和 Ethereum 主网只读查询。引用输出中的项目范围、逐链覆盖、证据引用与异常候选。已有区块查询和 `--project-file` 仍按原口径运行。
 
 查询默认整个120秒预算，所有请求、排队和重试共用截止；1000块仅区块调度间隔约200秒。未给耗时预算且范围超过500块时，运行前说明并显式使用 `--total-timeout 600`；用户给了更短预算就保留它，说明可能不完整。活跃地址还有逐笔回执工作量，不能承诺完成时间。默认auto使用标准库连接池，代理环境保留curl；不自动切换RPC。详细参数、错误诊断及performance口径在 [运行与输出说明](references/running-and-output.md)，大范围、传输或失败查询时读取它。

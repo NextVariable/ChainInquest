@@ -71,3 +71,81 @@ class WebDemoTests(unittest.TestCase):
                 finally:
                     app.shutdown()
                     worker.join()
+
+    def test_closed_beta_auth_review_isolation_and_html_export(self):
+        import hashlib
+
+        alice, bob = "a" * 40, "b" * 40
+        digests = json.dumps(
+            {k: hashlib.sha256(v.encode()).hexdigest() for k, v in (("alice", alice), ("bob", bob))}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            demo = web.Demo(
+                store,
+                runner=lambda s, job: run(s, job, query_fn=ContractQuery()),
+                origin="https://beta.example.org",
+                credentials=digests,
+            )
+            with web.server(demo, 0) as app:
+                worker = threading.Thread(target=app.serve_forever, daemon=True)
+                worker.start()
+                port = app.server_address[1]
+
+                def call(method, path, token=None, value=None, origin="https://beta.example.org"):
+                    client = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    headers = {
+                        "Host": "beta.example.org",
+                        "Origin": origin,
+                        "X-ChainInquest": "local",
+                        "Content-Type": "application/json",
+                    }
+                    if token:
+                        headers["Authorization"] = "Bearer " + token
+                    try:
+                        client.request(
+                            method, path, json.dumps(value) if value is not None else None, headers
+                        )
+                        r = client.getresponse()
+                        return r.status, dict(r.getheaders()), r.read()
+                    finally:
+                        client.close()
+
+                try:
+                    self.assertEqual(call("POST", "/api/plan", value=request())[0], 401)
+                    args = {**request(), "objective": "show activity"}
+                    args["manifest"]["project"] = "<script>alert(123)</script>"
+                    self.assertEqual(
+                        call("POST", "/api/plan", alice, args, "https://wrong.example")[0], 403
+                    )
+                    self.assertEqual(call("POST", "/api/jobs", alice, args)[0], 400)
+                    status, _, raw = call("POST", "/api/plan", alice, args)
+                    self.assertEqual(status, 200)
+                    preview = json.loads(raw)
+                    self.assertEqual(preview["plan"]["planner"]["mode"], "deterministic")
+                    approval = {"approval_id": preview["approval_id"]}
+                    self.assertEqual(call("POST", "/api/jobs", bob, approval)[0], 400)
+                    status, _, raw = call("POST", "/api/jobs", alice, approval)
+                    self.assertEqual(status, 202)
+                    job = json.loads(raw)["id"]
+                    self.assertEqual(call("POST", "/api/jobs", alice, approval)[0], 400)
+                    path = f"/api/jobs/{job}"
+                    self.assertEqual(call("GET", path, bob)[0], 404)
+                    self.assertEqual(call("POST", path + "/resume", bob)[0], 404)
+                    for _ in range(20):
+                        status, _, raw = call("GET", path, alice)
+                        if status == 200 and json.loads(raw)["result_ready"]:
+                            break
+                        time.sleep(0.03)
+                    status, headers, raw = call("GET", path + "/html", alice)
+                    self.assertEqual(status, 200)
+                    self.assertIn(".html", headers["Content-Disposition"])
+                    self.assertIn(b"&lt;script&gt;", raw)
+                    self.assertNotIn(b"<script>", raw)
+                    self.assertEqual(call("GET", path + "/html", bob)[0], 404)
+                    for _ in range(7):
+                        call("POST", "/api/jobs", bob, {})
+                    self.assertEqual(call("POST", "/api/jobs", bob, {})[0], 429)
+                finally:
+                    app.shutdown()
+                    worker.join()

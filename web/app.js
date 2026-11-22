@@ -6,11 +6,13 @@ const confirmInput = byId("confirmed");
 const start = byId("start");
 const reportArea = byId("results");
 const resultExport = byId("export");
+const htmlExport = byId("export-html");
 const resumeAction = byId("resume-action");
 const chainNames = {1: "Ethereum Mainnet", 8453: "Base Mainnet", 10143: "Monad Testnet"};
 const statuses = {queued: "Waiting to start", running: "Investigating", complete: "Investigation complete", partial: "Report ready with coverage gaps", failed: "Investigation failed"};
 const phases = {planning: "Plan prepared", pinned_snapshot: "Snapshot pinned", collecting: "Collecting chain evidence", address_checkpoint: "Contract report saved", cross_checking: "Checking evidence", report_ready: "Report ready", failed: "Investigation stopped"};
 let reviewed = null;
+let reviewGeneration = 0;
 let currentJob = null;
 let monitor = 0;
 
@@ -23,6 +25,9 @@ function node(tag, text, className) {
 
 function showError(error) {
   const message = {
+    authentication_required: "Enter your beta access token.",
+    review_required: "Preview the plan again. The previous confirmation has expired.",
+    api_rate_limit: "Request limit reached. Wait briefly, then try again.",
     demo_busy: "Another investigation is running. Wait for it to finish, then try again.",
     invalid_plan: "Check the confirmed contracts, network, sources and query range.",
     invalid_job: "This investigation could not be found in the current local store.",
@@ -34,7 +39,10 @@ function showError(error) {
 }
 
 async function fetchJson(path, options) {
-  const response = await fetch(path, options);
+  const headers = new Headers(options?.headers || {});
+  const token = byId("access-token").value.trim();
+  if (token) headers.set("Authorization", "Bearer " + token);
+  const response = await fetch(path, {...options, headers});
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "The local server could not complete the request.");
   return payload;
@@ -42,33 +50,32 @@ async function fetchJson(path, options) {
 
 function resetReview() {
   reviewed = null;
+  reviewGeneration += 1;
+  byId("planned").replaceChildren();
   confirmInput.checked = false;
   start.disabled = true;
   byId("review").hidden = true;
 }
 
-function displayReview() {
+async function displayReview() {
+  resetReview();
+  const generation = reviewGeneration;
   const payload = JSON.parse(manifest.value);
-  if (!Array.isArray(payload.manifest?.deployments) || payload.manifest.deployments.length === 0) {
-    throw new Error("Add at least one deployment and a confirmed contract to the project request.");
-  }
-  const rows = payload.manifest.deployments.flatMap((deployment) => {
-    if (!Array.isArray(deployment.contracts)) throw new Error("Each deployment needs a contract list.");
-    return deployment.contracts.map((contract) => {
-      const row = node("div", "", "contract");
-      row.append(
-        node("strong", chainNames[deployment.chain_id] || String(deployment.chain_id)),
-        node("p", String(contract.address)),
-        node("p", String(contract.attribution?.status || "unconfirmed")),
-        node("p", Array.isArray(contract.attribution?.sources) ? contract.attribution.sources.join(" | ") : "")
-      );
-      return row;
-    });
+  const objective = byId("objective").value.trim();
+  const preview = await fetchJson("/api/plan", postOptions(objective ? {...payload, objective} : payload));
+  if (generation !== reviewGeneration) return;
+  const plan = preview.plan;
+  byId("planned").append(details("Validated scope and planner",
+    {goal: plan.goal, ranges: plan.ranges, budget_seconds: plan.budget_seconds, planner: plan.planner}));
+  const rows = plan.entries.map((contract) => {
+    const row = node("div", "", "contract");
+    row.append(node("strong", chainNames[contract.chain_id] || String(contract.chain_id)),
+      node("p", contract.address), node("p", contract.attribution.status),
+      node("p", contract.attribution.sources.join(" | ")));
+    return row;
   });
   byId("contracts").replaceChildren(...rows);
-  reviewed = payload;
-  confirmInput.checked = false;
-  start.disabled = true;
+  reviewed = {approval_id: preview.approval_id};
   byId("review").hidden = false;
   confirmInput.focus();
 }
@@ -103,6 +110,48 @@ function transactionLink(url) {
   }
 }
 
+function trend(data) {
+  const days = Object.entries(data || {});
+  if (days.length === 0) return node("p", "No daily buckets for this scope.");
+  const panel = node("figure", "", "chart");
+  panel.append(node("figcaption", "Daily top-level transactions (UTC)"));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 480 100");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", days.map(([date, v]) => date + ": " + (v.transactions ?? "unknown")).join(", "));
+  const maximum = Math.max(1, ...days.map(([, v]) => v.transactions || 0));
+  const width = 480 / days.length;
+  days.forEach(([date, row], i) => {
+    const value = row.transactions;
+    const bar = document.createElementNS(svg.namespaceURI, "rect");
+    const height = value === null ? 6 : Math.max(2, 90 * value / maximum);
+    [["x", i * width], ["y", 97 - height], ["width", Math.max(2, width - 3)], ["height", height],
+     ["class", value === null ? "unknown-bar" : "known-bar"]].forEach(([k, v]) => bar.setAttribute(k, v));
+    const tip = document.createElementNS(svg.namespaceURI, "title");
+    tip.textContent = date + ": " + (value ?? "unknown");
+    bar.append(tip); svg.append(bar);
+  });
+  panel.append(svg, node("p", days[0][0] + " to " + days[days.length - 1][0] + ". Muted bars indicate unknown coverage."));
+  return panel;
+}
+
+function evidenceConnections(graph, catalog) {
+  const box = node("details");
+  box.append(node("summary", "Evidence graph (" + graph.facts.length + " fact edges)"));
+  const table = node("div", "", "connections");
+  const short = (value) => value.length <= 28 ? value : value.slice(0, 19) + "…" + value.slice(-6);
+  graph.facts.slice(0, 20).forEach((edge) => {
+    const row = node("div", "", "connection");
+    row.append(node("span", short(edge.from)), node("strong", edge.relation.replaceAll("_", " ")),
+      node("span", short(edge.to)));
+    const evidence = details("Evidence reference", {id: edge.evidence_ref, ...catalog[edge.evidence_ref]});
+    evidence.className = "connection-ref";
+    table.append(row, evidence);
+  });
+  box.append(table, details("Curator attribution", graph.curator_attribution));
+  return box;
+}
+
 function renderChain(id, chain) {
   const card = node("article", "", "chain");
   const title = node("div", "", "section-title");
@@ -129,8 +178,8 @@ function renderChain(id, chain) {
       {daily: chain.analysis.daily_utc, counterparty_evidence: chain.analysis.counterparty_evidence,
        candidates: chain.analysis.investigation_candidates, metrics: values}));
     const graph = chain.analysis.graph;
-    card.append(details("Evidence relationships",
-      {total_facts: graph.facts.length, displayed: graph.facts.slice(0, 40), curator_attribution: graph.curator_attribution}));
+    card.append(trend(chain.analysis.daily_utc));
+    card.append(evidenceConnections(graph, report.evidence_index));
   }
   const evidence = node("details");
   const entries = Object.entries(report.evidence_index);
@@ -169,6 +218,7 @@ async function follow(id) {
   currentJob = id;
   const sequence = ++monitor;
   resultExport.hidden = true;
+  htmlExport.hidden = true;
   reportArea.replaceChildren();
   while (sequence === monitor) {
     const state = await fetchJson("/api/jobs/" + id);
@@ -180,8 +230,9 @@ async function follow(id) {
       if (sequence !== monitor) break;
       reportArea.replaceChildren(node("h3", result.project), ...Object.entries(result.chains).map(([key, value]) => renderChain(key, value)));
       if (result.issues.length) reportArea.append(details("Investigation issues", result.issues));
-      resultExport.href = path;
+      reportArea.prepend(details("Facts, inferences and unknowns", result.conclusions || {}));
       resultExport.hidden = false;
+      htmlExport.hidden = false;
       break;
     }
     if (state.status !== "running" && state.status !== "queued") break;
@@ -195,6 +246,20 @@ function postOptions(payload) {
 }
 
 manifest.addEventListener("input", resetReview);
+byId("objective").addEventListener("input", resetReview);
+byId("access-token").addEventListener("input", () => {
+  resetReview();
+  monitor += 1;
+  currentJob = null;
+  reportArea.replaceChildren();
+  byId("progress").replaceChildren();
+  byId("job-id").textContent = "";
+  byId("outcome").textContent = "Ready to investigate";
+  resumeAction.hidden = true;
+  resultExport.hidden = true;
+  htmlExport.hidden = true;
+});
+byId("open-job").addEventListener("click", () => follow(location.hash.slice(1)).catch(showError));
 byId("example").addEventListener("click", async () => {
   try {
     resetReview();
@@ -205,7 +270,7 @@ byId("example").addEventListener("click", async () => {
 byId("scope-form").addEventListener("submit", (event) => {
   event.preventDefault();
   byId("error").hidden = true;
-  try { displayReview(); } catch (error) { showError(error); }
+  displayReview().catch(showError);
 });
 confirmInput.addEventListener("change", () => { start.disabled = !confirmInput.checked; });
 start.addEventListener("click", async () => {
@@ -214,6 +279,7 @@ start.addEventListener("click", async () => {
   byId("error").hidden = true;
   try {
     const job = await fetchJson("/api/jobs", postOptions(reviewed));
+    resetReview();
     history.replaceState(null, "", "#" + job.id);
     await follow(job.id);
   } catch (error) { showError(error); }
@@ -226,4 +292,22 @@ byId("resume").addEventListener("click", async () => {
     await follow(currentJob);
   } catch (error) { showError(error); }
 });
-if (location.hash) follow(location.hash.slice(1)).catch(showError);
+async function download(kind) {
+  const headers = new Headers();
+  const token = byId("access-token").value.trim();
+  if (token) headers.set("Authorization", "Bearer " + token);
+  const response = await fetch("/api/jobs/" + currentJob + "/" + (kind === "json" ? "result" : "html"), {headers});
+  if (!response.ok) throw new Error("The report export is unavailable.");
+  const url = URL.createObjectURL(await response.blob());
+  const link = node("a");
+  link.href = url;
+  link.download = "chaininquest-" + currentJob + "." + kind;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+resultExport.addEventListener("click", () => download("json").catch(showError));
+htmlExport.addEventListener("click", () => download("html").catch(showError));
+fetchJson("/api/config").then((config) => {
+  byId("auth").hidden = !config.authentication_required;
+  if (!config.authentication_required && location.hash) follow(location.hash.slice(1)).catch(showError);
+}).catch(showError);

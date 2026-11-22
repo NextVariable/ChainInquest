@@ -8,6 +8,8 @@ An Agent Skill for inspecting wallet and contract activity on Monad Testnet. Giv
 
 V3 runs a curated project investigation across Monad Testnet, Base and Ethereum, with resumable tasks and a verifiable evidence graph. Start the local demo with `python3 web/server.py` and open `http://127.0.0.1:8000`. [V3 instructions, validation and deployment](docs/v3.md).
 
+V4 Beta adds bounded natural-language plans, HTML/JSON reports, watermarked history imports and closed-beta access controls. See [V4 validation and deployment gates](docs/v4-beta.md).
+
 ## Install
 
 ```sh
