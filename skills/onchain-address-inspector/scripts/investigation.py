@@ -65,16 +65,19 @@ def history_saver(path):
                 raise ValueError
             target = Path(path)
             temporary = target.with_suffix(target.suffix + ".tmp")
-            temporary.write_text(body, encoding="utf-8")
+            # Private mode is applied at creation; a post-hoc chmod would leave
+            # a readable window after the file appears.
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.chmod(temporary, 0o600)
-            except OSError:
-                pass
-            os.replace(temporary, target)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(body)
+                os.replace(temporary, target)
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
         except (OSError, ValueError, RecursionError):
             failed = True
 

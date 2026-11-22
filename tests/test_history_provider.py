@@ -309,6 +309,24 @@ class RoutescanTests(unittest.TestCase):
         self.assertEqual(state["requests"], 1)
         self.assertTrue(fresh.coverage["attested"])
 
+    def test_resume_revalidates_provider_watermark(self):
+        board = Board({(1, 10_000, 1): [tx_row(1)]})
+        index = self.index(board)
+        state = {}
+        index.discover(A, 1, 10_000, state=state)
+        self.assertTrue(index.coverage["attested"])
+
+        def later(host, path, client, attempts=3):
+            params = dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))
+            if params.get("action") == "getblockreward":
+                return {"status": "0", "message": "not indexed", "result": None}
+            return {"status": "0", "message": "No transactions found", "result": []}
+
+        stale = RoutescanIndex(1, FakeClient(), FakeRpc(10_000), fetch=later)
+        rows, gaps = stale.discover(A, 1, 10_000, state=state)
+        self.assertIn("index_head_unverified", [gap["reason"] for gap in gaps])
+        self.assertFalse(stale.coverage["attested"])
+
     def test_conflicting_duplicate_transaction_rows_suppress_attestation(self):
         row = tx_row(5)
         board = Board({(1, 10_000, 1): [row, {**row, "value": "2"}]})
@@ -348,6 +366,43 @@ class RoutescanTests(unittest.TestCase):
         rows, gaps = index.discover_logs(A, 1, 100, state={})
         self.assertEqual(len(rows), 1)
         self.assertIn("index_log_conflict", [gap["reason"] for gap in gaps])
+        self.assertFalse(index.log_coverage["attested"])
+
+    def test_log_budget_truncation_stays_partial_after_resume(self):
+        log = {
+            "address": A,
+            "blockNumber": "0x64",
+            "blockHash": block_hash(100),
+            "transactionHash": HASH,
+            "transactionIndex": "0x1",
+            "logIndex": "0x1",
+            "topics": [TRANSFER, "0x" + "22" * 32, "0x" + "33" * 32],
+            "data": "0x01",
+        }
+
+        def fetch(host, path, client, attempts=3):
+            params = dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))
+            if params.get("action") == "getblockreward":
+                return {
+                    "status": "1",
+                    "result": {
+                        "blockNumber": params["blockno"],
+                        "timeStamp": str(STAMP + int(params["blockno"])),
+                    },
+                }
+            if params.get("module") == "logs" and params.get("address"):
+                return {"status": "1", "message": "OK", "result": [log]}
+            return {"status": "0", "message": "No logs found", "result": []}
+
+        index = RoutescanIndex(1, FakeClient(), FakeRpc(100), fetch=fetch)
+        state = {}
+        with patch("history.MAX_INDEX_LOGS", 1):
+            rows, gaps = index.discover_logs(A, 1, 100, state=state)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("log_budget", [gap["reason"] for gap in gaps])
+        self.assertFalse(index.log_coverage["attested"])
+        rows, gaps = index.discover_logs(A, 1, 100, state=state)
+        self.assertIn("log_budget", [gap["reason"] for gap in gaps])
         self.assertFalse(index.log_coverage["attested"])
 
     def test_capped_resume_matches_single_run_metrics(self):
@@ -401,6 +456,7 @@ class StateFileTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8")), {"schema_version": 1, "rows": []}
             )
+            self.assertFalse((Path(root) / "history-state.json.tmp").exists())
 
     def test_corrupt_state_file_recovers_and_stays_private(self):
         with tempfile.TemporaryDirectory() as root:

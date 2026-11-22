@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -258,6 +259,54 @@ class InvestigationTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(adapter.discover(A, 0, 3)[1][0]["reason"], "index_page_budget")
+
+    def test_index_page_timeout_is_reported_on_python_310(self):
+        class Client:
+            timeout = 1
+
+            @staticmethod
+            def remaining():
+                return 1
+
+        class LegacyTimeout(Exception):
+            """Python 3.10 concurrent.futures.TimeoutError is not OSError."""
+
+        reached = threading.Event()
+
+        class NeverReady:
+            def result(self, timeout=None):
+                reached.wait(2)
+                raise LegacyTimeout
+
+            def set_result(self, value):
+                pass
+
+            def set_exception(self, error):
+                pass
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def request(self, *args, **kwargs):
+                pass
+
+            def getresponse(self):
+                reached.set()
+                raise OSError
+
+            def close(self):
+                pass
+
+        adapter = EtherscanAdapter(INDEX_SECRET, Client())
+        with (
+            patch("adapters.concurrent.futures.TimeoutError", LegacyTimeout),
+            patch("adapters.concurrent.futures.Future", NeverReady),
+            patch("adapters.http.client.HTTPSConnection", Connection),
+        ):
+            with self.assertRaises(QueryError) as raised:
+                adapter._page(A, 0, 3, 1)
+        self.assertEqual(raised.exception.category, "index_timeout")
 
     def test_nonstandard_shape_and_optional_decimals(self):
         chain = Ledger()

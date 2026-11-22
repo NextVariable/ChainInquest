@@ -259,9 +259,17 @@ class EtherscanAdapter:
         threading.Thread(target=worker, daemon=True).start()
         try:
             payload = future.result(timeout=timeout)
-        except (OSError, ValueError, RecursionError, http.client.HTTPException) as error:
-            category = "index_timeout" if isinstance(error, TimeoutError) else "index_transport"
-            raise QueryError("Index request failed", category) from None
+        except (
+            OSError,
+            ValueError,
+            RecursionError,
+            http.client.HTTPException,
+            concurrent.futures.TimeoutError,
+        ) as error:
+            timed_out = isinstance(error, (TimeoutError, concurrent.futures.TimeoutError))
+            raise QueryError(
+                "Index request failed", "index_timeout" if timed_out else "index_transport"
+            ) from None
         if not isinstance(payload, dict):
             raise QueryError("Malformed index response", "index_response")
         rows = payload.get("result")

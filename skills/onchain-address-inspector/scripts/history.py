@@ -444,17 +444,9 @@ class RoutescanIndex:
 
     def watermark(self, end, state, start=0):
         number, header_hash, seconds = self.rpc.header(end)
-        cached = state.get("watermark")
-        if isinstance(cached, dict) and cached.get("block") == end:
-            if cached.get("block_hash") == header_hash and cached.get("timestamp") == seconds:
-                return cached
-            # A changed header hash for the same height is a reorg (or a stale
-            # file from another chain). Discard range progress before attesting.
-            name = state.get("provider", self.name)
-            chain_id = state.get("chain_id", self.chain_id)
-            address = state.get("address")
-            state.clear()
-            state.update(_index_state(name, chain_id, address, start, end))
+        # Re-read the provider watermark on every run. A cached watermark alone
+        # would let a resumed report claim coverage that the provider no longer
+        # reports, and would hide provider-side corrections.
         payload = self.read(module="block", action="getblockreward", blockno=end)
         row = payload.get("result")
         if payload.get("status") != "1" or not isinstance(row, dict):
@@ -470,14 +462,27 @@ class RoutescanIndex:
         if provider_hash is not None:
             if not valid(HASH, provider_hash) or provider_hash.lower() != header_hash:
                 raise QueryError("Index block hash differs from RPC", "index_watermark_mismatch")
-        state["watermark"] = {
+        current = {
             "block": block,
             "timestamp": stamp,
             "block_hash": header_hash,
             "provider_block_hash": provider_hash.lower() if provider_hash else None,
             "verified": True,
         }
-        return state["watermark"]
+        cached = state.get("watermark")
+        if isinstance(cached, dict) and cached.get("block") == end:
+            if cached == current:
+                return cached
+            # Same height but a different provider/RPC view (reorg, provider
+            # correction, or a stale file): discard range progress before
+            # attesting anything from the cached rows.
+            name = state.get("provider", self.name)
+            chain_id = state.get("chain_id", self.chain_id)
+            address = state.get("address")
+            state.clear()
+            state.update(_index_state(name, chain_id, address, start, end))
+        state["watermark"] = current
+        return current
 
     def discover(self, address, start, end, state=None, save=None):
         state = _resume_state(state, self.name, self.chain_id, address, start, end)
@@ -674,7 +679,9 @@ class RoutescanIndex:
             while not query["done"]:
                 if len(rows) >= MAX_INDEX_LOGS:
                     query["done"] = True
-                    transient.append(
+                    # Persist the truncation: a resumed run must not treat a
+                    # budget-stopped query as an exhausted one.
+                    gaps.append(
                         {
                             "reason": "log_budget",
                             "from": first,
