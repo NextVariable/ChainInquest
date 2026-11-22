@@ -6,6 +6,8 @@
 
 An Agent Skill for inspecting wallet and contract activity on Monad Testnet. Given an address and a bounded block range, it returns top-level transactions, receipt outcomes, native-coin amounts, direct-caller concentration, and traceable evidence. Read-only; no wallet connection required. Runtime uses the Python 3.10+ standard library, with optional curl transport.
 
+V3 runs a curated project investigation across Monad Testnet, Base and Ethereum, with resumable tasks and a verifiable evidence graph. Start the local demo with `python3 web/server.py` and open `http://127.0.0.1:8000`. [V3 instructions, validation and deployment](docs/v3.md).
+
 ## Install
 
 ```sh
@@ -39,7 +41,7 @@ V2.1 adds `--project-file` to aggregate saved, comparable reports for confirmed 
 
 Check `coverage.complete`, `coverage.chain_consistent`, and `errors` first. Partial scans describe retrieved samples only. `metrics=null` means a reliable aggregate is unavailable; unknown receipts are not failed transactions. Native amounts use integer wei and include only successful top-level value.
 
-Direct-caller concentration includes transfers, failed transactions, and unknown outcomes. It does not establish human users, manipulation, or commercial adoption. Investigation mode separates top-level native value from token events. Coverage excludes mainnet, complete history, internal calls and indirect interactions. See [usage](docs/usage.md) and [scope](skills/onchain-address-inspector/references/sources-and-scope.md).
+Direct-caller concentration includes transfers, failed transactions, and unknown outcomes. It does not establish human users, manipulation, or commercial adoption. Investigation mode separates top-level native value from token events. The original Skill is scoped to Monad Testnet. V3 includes Base and Ethereum Mainnet. Complete history, internal calls and indirect interactions remain outside scope. See [usage](docs/usage.md) and [scope](skills/onchain-address-inspector/references/sources-and-scope.md).
 
 ## Development
 

@@ -1,13 +1,16 @@
 import dataclasses
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "skills/onchain-address-inspector/scripts")
 )
 
+from corroboration import corroborate
 from evidence import QueryError
 from jobs import JobStore
 from test_investigation import A, B, Ledger, args, investigate
@@ -157,3 +160,31 @@ class InvestigationJobTests(unittest.TestCase):
                 if cid != "10143":
                     self.assertIn("value_native", tx)
                     self.assertNotIn("value_mon", tx)
+
+    def test_secondary_receipt_disagreement_suppresses_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            job = store.create(plan_investigation(request()))
+            ledger = Ledger()
+            ledger.close = lambda: None
+            with (
+                patch.dict(
+                    os.environ, {"MONAD_TESTNET_RPC_SECONDARY": "https://secondary.example.org"}
+                ),
+                patch("corroboration.Client", return_value=ledger),
+            ):
+                result = run(store, job, query_fn=ContractQuery())
+                self.assertEqual(result["status"], "complete")
+                chain = store.result(job)["chains"]["10143"]
+                self.assertEqual(chain["cross_check"]["status"], "matched_sample")
+                self.assertTrue(chain["analysis"]["graph"]["facts"])
+                ledger.status = "0x0"
+                suspect = store.create(plan_investigation(request()))
+                run(store, suspect, query_fn=ContractQuery())
+                disputed = store.result(suspect)["chains"]["10143"]
+                self.assertEqual(disputed["cross_check"]["status"], "disagreement")
+                self.assertFalse(disputed["coverage"]["complete"])
+                self.assertIsNone(disputed["analysis"])
+                self.assertEqual(
+                    corroborate(10143, chain, 1)["reason"], "snapshot_or_budget_unavailable"
+                )

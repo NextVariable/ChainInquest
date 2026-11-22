@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChainInquest | Investigation desk</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="frame bar"><a href="/" class="brand">Chain<span>Inquest</span></a><span class="local">Local investigation desk</span></div>
+  </header>
+  <main class="frame">
+    <section class="intro">
+      <h1>Investigate a Web3 project</h1>
+      <p>Start with a confirmed contract list. Follow the activity from the project down to each transaction and event.</p>
+    </section>
+    <div class="workspace">
+      <section class="setup" aria-labelledby="setup-title">
+        <div class="section-title"><h2 id="setup-title">Investigation scope</h2><button id="example" class="secondary" type="button">Load Circle example</button></div>
+        <form id="scope-form">
+          <label for="manifest">Project request <span>JSON</span></label>
+          <textarea id="manifest" rows="15" spellcheck="false" required></textarea>
+          <div class="actions"><button type="submit">Review contract list</button></div>
+        </form>
+        <div id="review" hidden>
+          <h3>Contract list</h3>
+          <div id="contracts"></div>
+          <label class="confirm"><input type="checkbox" id="confirmed"> I reviewed the contract addresses and attribution sources.</label>
+          <button type="button" id="start" disabled>Start investigation</button>
+        </div>
+      </section>
+      <section class="output" aria-labelledby="report-title">
+        <div class="section-title"><h2 id="report-title">Investigation report</h2><a id="export" class="secondary" hidden download>Export JSON</a></div>
+        <div id="outcome" role="status" aria-live="polite" class="status">Ready to investigate</div>
+        <div class="actions" id="resume-action" hidden><button id="resume" class="secondary" type="button">Resume this investigation</button></div>
+        <p id="job-id" class="job-id"></p>
+        <div id="progress" class="timeline"></div>
+        <div id="results"></div>
+      </section>
+    </div>
+    <p id="error" role="alert" hidden></p>
+  </main>
+</body>
+</html>
