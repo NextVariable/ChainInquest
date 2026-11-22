@@ -58,6 +58,28 @@ Generate a separate unpredictable token for each tester using a cryptographic ra
 
 Deploy behind a managed TLS reverse proxy with the exact configured Host, no public listener on the backend port, a private service account and state volume, edge request-size and rate limits, and access logs that omit Authorization headers and request bodies. Do not establish forwarding or weaken proxy safeguards to work around a local failure. Verify TLS and origin checks, isolation, rotation and revocation, abort and restart behavior, and resource limits in the actual deployment before inviting users. Local security tests cover unauthorized access, cross-user reads and resumes, cross-origin writes, replayed approvals, quotas and HTML escaping. No hosted deployment was provisioned or independently security-reviewed in this sprint.
 
+### Closed-beta runbook (prepared, not executed)
+
+This runbook is documentation only. No host, DNS record, certificate or credential was created. Hosting requires explicit owner approval.
+
+1. Install Python 3.10 or newer, then `python3 -m pip install -r requirements.txt -r skills/onchain-address-inspector/requirements-abi.txt`.
+2. Generate one random token per tester locally, store only its SHA-256 digest, and deliver the token out of band. Never paste a token into a manifest, URL, report or commit.
+3. Export `CHAININQUEST_BETA_ORIGIN` and `CHAININQUEST_BETA_TOKEN_HASHES`, keep the backend bound to loopback (`python3 web/server.py --port 8080 --store /var/lib/chaininquest`), and run it under a dedicated service account with a private state volume.
+4. Terminate TLS at a managed reverse proxy, preserve the configured Host header, enforce request-size and rate limits, and scrub `Authorization` and request bodies from access logs.
+5. Before inviting testers, verify: unauthenticated preview/job/report/export requests are rejected; one tester cannot read or resume another tester's job; cross-origin writes are rejected; approvals expire and cannot be replayed; restart preserves completed jobs and resume state; storage and concurrency limits hold; token rotation revokes the old digest.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `CHAININQUEST_BETA_ORIGIN` | Exact HTTPS origin allowed for browser writes | unset (loopback only) |
+| `CHAININQUEST_BETA_TOKEN_HASHES` | JSON map of account to SHA-256 token digest | unset (no accounts) |
+| `CHAININQUEST_ETHEREUM_RPC`, `CHAININQUEST_BASE_RPC`, `CHAININQUEST_MONAD_RPC` | Chain RPC overrides on the allowlist | built-in public endpoints |
+| `CHAININQUEST_INDEX_MAX_PAGES` | Page cap for historical index paging (1–200) | 60 |
+| `CHAININQUEST_HISTORY_STATE` | Default resume-state path for the CLI | unset |
+| `CHAININQUEST_PLANNER_MODEL`, `OPENAI_API_KEY` | Optional planner model; both required | unset (deterministic) |
+| `CHAININQUEST_MODEL_INPUT_USD_PER_M`, `CHAININQUEST_MODEL_OUTPUT_USD_PER_M` | Optional cost rates for recorded estimates | unset |
+
+All chain access is read-only. The service never signs or broadcasts transactions, and the RPC allowlist rejects unapproved hosts.
+
 ## Live acceptance and reproduction
 
 The five manifests in [examples/beta](../examples/beta) pin Ethereum block 26468359 and point to curators' primary deployment sources. PublicNode and dRPC returned the same block hash, direct transaction rows, status, raw value and event identity/data for the tested filters. Circle USDC produced 12 transactions and 171 events. Aave, ENS, Lido and Uniswap Factory had zero matching rows in that fixed block after both sources finished the bounded queries. These are short positive and empty historical windows only.
@@ -69,6 +91,8 @@ On Base Mainnet, the Circle USDC and CCTP contracts completed blocks 60650237–
 The no-model natural-language CLI run selected `flows`, verified two Circle Monad Testnet contracts and completed blocks 81761138–81761141. A separate local Web API run previewed and confirmed the plan, queried the same contracts on QuickNode at blocks 81762695–81762698, and retrieved both report formats. Both used the existing RPC investigation. The model-backed path remains tested through mocks only.
 
 A local Chrome run exercised natural-language entry, plan preview, contract confirmation, progress, and the Aave result. The original Ethereum node returned HTTP 403; the report showed unknown activity. Reopening the same job from persisted state and resuming on dRPC completed the original one-block scope, matching the zero-activity reference. The evidence verifier passed on the recovered report.
+
+The V4 RC report UI was exercised again in the same local browser flow with the Circle Monad example over recent blocks 81798886–81798889. The run completed with attested coverage, rendered the chain card, coverage status, metrics and the facts/inferences/unknowns sections, and showed no error banner. That window contained no activity, so the rendered zero is a proven zero, not an unknown placeholder.
 
 The real 30-day Aave investigation resolved Ethereum blocks 26253076–26468402 for October 23 to November 22, 2026 UTC. It reported partial coverage. The public index timed out without an attested range, and dRPC event searches returned HTTP errors and exhausted the query deadline. There were no fully answered event ranges. This record predates the Routescan route and remains a valid example of a provider failure being shown as partial rather than zero.
 
