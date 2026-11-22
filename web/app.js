@@ -500,9 +500,25 @@ async function follow(id) {
       if (result.issues.length) reportArea.append(details("Investigation issues", result.issues));
       resultExport.hidden = false;
       htmlExport.hidden = false;
+      byId("feedback").hidden = false;
+      byId("feedback-form").hidden = false;
+      byId("feedback-done").hidden = true;
       break;
     }
     if (state.status !== "running" && state.status !== "queued") break;
+    const updated = Date.parse(state.updated_at || "");
+    const limit = 1000 * ((state.plan?.budget_seconds || 120) + 90);
+    if (state.status === "running" && !Number.isNaN(updated) && Date.now() - updated > limit) {
+      byId("outcome").textContent = "Run appears interrupted";
+      byId("recovery").replaceChildren(
+        node("strong", "This run stopped updating."),
+        node("p", "The server may have restarted. Resume to continue from the last checkpoint; saved evidence is kept.")
+      );
+      byId("recovery").hidden = false;
+      resumeAction.hidden = false;
+      byId("resume").disabled = false;
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 1100));
   }
 }
@@ -524,6 +540,7 @@ function clearOutput() {
   byId("recovery").hidden = true;
   resultExport.hidden = true;
   htmlExport.hidden = true;
+  byId("feedback").hidden = true;
 }
 
 const scopeFields = () => {
@@ -602,6 +619,21 @@ async function download(kind) {
 }
 resultExport.addEventListener("click", () => download("json").catch(showError));
 htmlExport.addEventListener("click", () => download("html").catch(showError));
+byId("feedback-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  byId("error").hidden = true;
+  try {
+    await fetchJson("/api/jobs/" + currentJob + "/feedback", postOptions({
+      completed: byId("fb-completed").value,
+      understood: byId("fb-understood").value,
+      incomplete: byId("fb-incomplete").value,
+      reuse: byId("fb-reuse").value,
+      comment: byId("fb-comment").value
+    }));
+    byId("feedback-form").hidden = true;
+    byId("feedback-done").hidden = false;
+  } catch (error) { showError(error); }
+});
 fetchJson("/api/config").then((config) => {
   byId("auth").hidden = !config.authentication_required;
   if (!config.authentication_required && location.hash) follow(location.hash.slice(1)).catch(showError);

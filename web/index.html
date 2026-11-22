@@ -103,6 +103,24 @@
         <div id="recovery" class="recovery" hidden></div>
         <div id="progress" class="timeline"></div>
         <div id="results"></div>
+        <section id="feedback" class="feedback" hidden aria-labelledby="feedback-title">
+          <h3 id="feedback-title">Was this investigation useful?</h3>
+          <p class="hint">Five quick questions. Answers are stored with this investigation only; no tokens are recorded.</p>
+          <form id="feedback-form">
+            <label for="fb-completed">Did you get the answer you needed?</label>
+            <select id="fb-completed"><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select>
+            <label for="fb-understood">Was the report easy to understand?</label>
+            <select id="fb-understood"><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select>
+            <label for="fb-incomplete">Did you notice missing or incomplete data?</label>
+            <select id="fb-incomplete"><option value="no">No</option><option value="yes">Yes</option><option value="unsure">Not sure</option></select>
+            <label for="fb-reuse">Would you use this again?</label>
+            <select id="fb-reuse"><option value="yes">Yes</option><option value="maybe">Maybe</option><option value="no">No</option></select>
+            <label for="fb-comment">Anything else? <span>optional, 500 characters</span></label>
+            <textarea id="fb-comment" rows="2" maxlength="500"></textarea>
+            <button type="submit">Send feedback</button>
+          </form>
+          <p id="feedback-done" hidden>Thank you. Your answers were recorded for this investigation.</p>
+        </section>
       </section>
     </div>
     <p id="error" role="alert" hidden></p>

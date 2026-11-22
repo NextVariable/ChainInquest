@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/onchain-address-inspector/scripts"))
 sys.path.insert(0, str(ROOT / "web"))
 
+import feedback  # noqa: E402
 from access import Access  # noqa: E402
 from evidence import QueryError, invalid_constant, unique_object  # noqa: E402
 from jobs import JobStore  # noqa: E402
@@ -29,7 +30,7 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
-JOB_ROUTE = re.compile(r"/api/jobs/([0-9a-f]{32})(?:/(result|resume|html))?")
+JOB_ROUTE = re.compile(r"/api/jobs/([0-9a-f]{32})(?:/(result|resume|html|feedback))?")
 MAX_INPUT = 128 * 1024
 
 
@@ -124,7 +125,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if self.demo.access.origin:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
@@ -150,8 +154,26 @@ class Handler(BaseHTTPRequestHandler):
             "storage_budget": 429,
             "api_rate_limit": 429,
             "authentication_required": 401,
+            "input_budget": 413,
         }.get(code, 400)
         self.send({"error": code}, status)
+
+    def body(self):
+        if self.headers.get_content_type() != "application/json" or self.headers.get(
+            "Transfer-Encoding"
+        ):
+            raise ValueError
+        size = int(self.headers["Content-Length"])
+        if not 0 < size <= MAX_INPUT:
+            raise QueryError("Request exceeds the input budget", "input_budget")
+        payload = json.loads(
+            self.rfile.read(size),
+            object_pairs_hook=unique_object,
+            parse_constant=invalid_constant,
+        )
+        if not isinstance(payload, dict):
+            raise ValueError
+        return payload
 
     def do_GET(self):
         if not self.local_host():
@@ -161,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
             if route in STATIC:
                 file, kind = STATIC[route]
                 return self.send((ROOT / "web" / file).read_bytes(), content_type=kind)
+            if route == "/healthz":
+                return self.send({"status": "ok", "service": "chaininquest"})
             if route == "/api/examples/circle":
                 return self.send((ROOT / "examples/circle-monad.json").read_bytes())
             if route == "/api/config":
@@ -197,20 +221,7 @@ class Handler(BaseHTTPRequestHandler):
             self.demo.access.limit(user, "POST")
             store = self.demo.access.store(user)
             if self.path in {"/api/jobs", "/api/plan"}:
-                if self.headers.get_content_type() != "application/json" or self.headers.get(
-                    "Transfer-Encoding"
-                ):
-                    raise ValueError
-                size = int(self.headers["Content-Length"])
-                if not 0 < size <= MAX_INPUT:
-                    return self.send({"error": "input_budget"}, 413)
-                payload = json.loads(
-                    self.rfile.read(size),
-                    object_pairs_hook=unique_object,
-                    parse_constant=invalid_constant,
-                )
-                if not isinstance(payload, dict):
-                    raise ValueError
+                payload = self.body()
                 if self.path == "/api/plan":
                     return self.send(self.demo.preview(user, payload))
                 if "approval_id" in payload or self.demo.access.accounts:
@@ -219,9 +230,22 @@ class Handler(BaseHTTPRequestHandler):
                     job_id = self.demo.start(plan=plan_investigation(payload), store=store)
             else:
                 match = JOB_ROUTE.fullmatch(self.path)
-                if not match or match[2] != "resume":
+                if not match or match[2] not in {"resume", "feedback"}:
                     return self.send({"error": "not_found"}, 404)
                 state = store.state(match[1])
+                if match[2] == "feedback":
+                    if not state.get("result_ready"):
+                        raise QueryError("The report is not ready", "not_ready")
+                    document = feedback.record(
+                        store.directory(match[1]),
+                        match[1],
+                        state,
+                        store.result(match[1]),
+                        self.body(),
+                    )
+                    return self.send(
+                        {"recorded": True, "submitted_at": document["submitted_at"]}, 201
+                    )
                 if state["attempts"] >= 3 and state["status"] != "complete":
                     raise QueryError("Resume limit reached", "attempt_budget")
                 job_id = self.demo.start(job_id=match[1], store=store)

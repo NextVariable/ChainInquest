@@ -1,6 +1,8 @@
 import http.client
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -72,6 +74,48 @@ class WebDemoTests(unittest.TestCase):
                         1,
                     )
                     self.assertTrue(report["chains"]["10143"]["analysis"]["graph"]["facts"])
+                    answers = {
+                        "completed": "yes",
+                        "understood": "partly",
+                        "incomplete": "no",
+                        "reuse": "yes",
+                        "comment": "clear",
+                    }
+                    status, _, body = call(
+                        "POST", f"/api/jobs/{job}/feedback", json.dumps(answers), **authorized
+                    )
+                    self.assertEqual(status, 201, body)
+                    record = json.loads((Path(tmp) / job / "feedback.json").read_text())
+                    self.assertEqual(record["answers"]["understood"], "partly")
+                    self.assertGreaterEqual(record["elapsed_seconds"], 0)
+                    self.assertEqual(record["coverage"]["complete"], 1)
+                    status, _, _ = call(
+                        "POST",
+                        f"/api/jobs/{job}/feedback",
+                        json.dumps({**answers, "completed": "maybe"}),
+                        **authorized,
+                    )
+                    self.assertEqual(status, 400)
+                    pending = store.create(web.plan_investigation(request()))
+                    status, _, _ = call(
+                        "POST", f"/api/jobs/{pending}/feedback", json.dumps(answers), **authorized
+                    )
+                    self.assertEqual(status, 409)
+                    summary = subprocess.run(
+                        [
+                            sys.executable,
+                            str(Path(__file__).parents[1] / "scripts/beta_feedback.py"),
+                            "--store",
+                            tmp,
+                        ],
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                    )
+                    totals = json.loads(summary.stdout)
+                    self.assertEqual(totals["feedback"], 1)
+                    self.assertEqual(totals["completed_yes_percent"], 100.0)
+                    self.assertEqual(totals["coverage_reported"]["complete"], 1)
                 finally:
                     app.shutdown()
                     worker.join()
@@ -116,6 +160,10 @@ class WebDemoTests(unittest.TestCase):
                         client.close()
 
                 try:
+                    status, headers, raw = call("GET", "/healthz")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(raw)["status"], "ok")
+                    self.assertIn("Strict-Transport-Security", headers)
                     self.assertEqual(call("POST", "/api/plan", value=request())[0], 401)
                     args = {**request(), "objective": "show activity"}
                     args["manifest"]["project"] = "<script>alert(123)</script>"

@@ -4,7 +4,7 @@ V4 reuses the V3 execution path and the single-address Skill. It adds historical
 
 ## Run locally
 
-From the repository root, run `python3 web/server.py --port 8000`. Open `http://127.0.0.1:8000`, load the Circle sample or paste a project request, enter an optional objective, preview the plan, confirm attribution and launch. The report separates facts, investigation candidates and unknowns. HTML is an inert attachment and includes the evidence catalog and raw records. JSON can be checked independently with `python3 scripts/verify_evidence.py REPORT.json`.
+From the repository root, run `python3 web/server.py --port 8000`. Open `http://127.0.0.1:8000`, then enter a project name, contract addresses, the HTTPS page that lists them, a goal and a time scope. Preview the readable plan, confirm attribution and launch. The raw manifest stays available under "Advanced" for existing users. The report separates facts, investigation candidates and unknowns, shows coverage per evidence type, and offers JSON and self-contained HTML downloads. JSON can be checked independently with `python3 scripts/verify_evidence.py REPORT.json`.
 
 ```sh
 python3 skills/onchain-address-inspector/scripts/v3.py \
@@ -22,9 +22,9 @@ Use `scope: {"days":30}` for a rolling window or `scope: {"from_time":"2026-10-0
 | Ethereum Blockscout public | Indexing status, block tip and address page returned HTTP 200 in direct probes. The adapter matched the reported index head with RPC but the bounded address query timed out on the selected sample. | Fallback only when Routescan is unavailable and no Etherscan key or operator snapshot is configured. The observed head never certifies historical completeness. |
 | Base / Monad Testnet Blockscout public endpoints | Base returned 403. The probed Monad Testnet endpoint returned 404. | These public endpoints are outside the adapter allowlist. |
 | Etherscan V2 | Registry lists Ethereum, Base and Monad Testnet. Base requires a paid plan in the observed registry. No API key was configured. | Use the existing keyed transaction candidate adapter if available. An exhausted page does not prove a complete range. Base 30-day coverage is credential-blocked and reported as unknown. |
+| Dune | Documentation lists Ethereum and Base. Monad Testnet coverage and runnable query/credits were not verified. | No live integration is enabled. |
 
 The keyed Etherscan adapter never attests coverage: its basis is `pagination_without_provider_watermark`. Resume state is reused only when the provider tag, address and block range all match. Deadline, page-budget and transport gaps belong to the run that produced them and are not replayed after a later successful resume.
-| Dune | Documentation lists Ethereum and Base. Monad Testnet coverage and runnable query/credits were not verified. | No live integration is enabled. |
 
 Routescan coverage has two independent parts. Transactions are paged across the exact block range with a persisted queue (`CHAININQUEST_INDEX_MAX_PAGES`, default 60, maximum 200). Event discovery runs five bounded queries (emitter, Transfer/Approval in, Transfer/Approval out) and deduplicates by transaction hash and log index. Every candidate row and log is reconciled against RPC transaction, receipt, block and topic fields before it contributes to metrics. When a row omits `logIndex` or `transactionIndex`, the receipt is fetched to repair it; an unrepaired row becomes a gap. Attestation means the provider watermark matched the RPC end block and pagination was exhausted; it is not cryptographic proof that the provider omitted nothing. Base and Monad long ranges without a configured key or operator snapshot remain `unknown`, never zero.
 
@@ -132,3 +132,59 @@ python3 scripts/reconcile_beta.py artifacts examples/beta/ethereum-26468359-drpc
 ```
 
 The saved [reference evidence](../examples/beta/ethereum-26468359-drpc.json) contains public dRPC data for block 26468359. It records raw values and event payloads to make the comparison repeatable even when a public API is limited. The RPC rerun still depends on the configured provider. Other raw probe outputs remain ignored under `artifacts/`. Fixture, public RPC, public index, authenticated index and model transport checks are distinct. Ethereum 30-day coverage has three attested live runs; Base and Monad 30-day coverage remain credential-blocked and are release gates, not completed acceptance.
+
+## V4.1 closed beta productization
+
+V4.1 does not add a new investigation engine. It removes the manifest-first entry barrier, makes coverage and recovery visible in the page, records structured tester feedback, and hardens state handling.
+
+### Guided entry
+
+The web page now asks for a project name, one to eight contract addresses, the HTTPS page that lists them, a goal and a scope (7 days, 30 days, 1–32 recent blocks or an explicit range under 32 blocks). The browser builds the manifest locally; the server still validates membership, attribution and limits. The plan preview renders the resolved ranges, attribution, ordered checks, rules and budget. Confirmation is single-use and expires after five minutes. The raw manifest remains available in the advanced section.
+
+A run with no model objective now also shows the deterministic plan steps. The planner remains optional and cannot change membership, scope or budget.
+
+### Feedback capture
+
+After a report is ready, the page asks four closed questions (goal achieved, report understood, missing data noticed, reuse intent) plus an optional 500-character comment. Feedback is written atomically as `feedback.json` inside the job directory, so it follows the same account isolation and retention rules as the report. The server records elapsed seconds from job timestamps and the observed coverage counts, not client claims.
+
+Summarize a store with:
+
+```sh
+python3 scripts/beta_feedback.py --store artifacts/web-investigations
+```
+
+### Retention
+
+Finished jobs are pruned manually. The default is a dry run:
+
+```sh
+python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30
+python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30 --apply
+```
+
+Running jobs and symlinks are skipped. There is no scheduler; pruning is an operator action.
+
+### Deployment checks
+
+`GET /healthz` returns `{"status":"ok"}` without authentication so a reverse proxy can probe liveness. When `CHAININQUEST_BETA_ORIGIN` is set, responses include `Strict-Transport-Security` and `X-Frame-Options: DENY` in addition to the existing CSP, nosniff, no-referrer and no-store headers. The service still terminates plain HTTP on loopback only; TLS is the proxy's job.
+
+| Control | Implemented behavior |
+| --- | --- |
+| Access | Optional bearer tokens compared as SHA-256 digests in constant time; one namespace per account |
+| Isolation | Job IDs are not credentials; cross-account reads, resumes and exports return 404 |
+| Rate limits | 8 POST/min and 45 GET/10s per principal; 16 sockets; one active run; previews capped at 64 |
+| Storage | 32 jobs per account, 32 MiB per result, 128 KiB per request |
+| Run budget | 120s default (15–240s), three attempts, 8 contracts, 60 index pages |
+| Redaction | RPC and index URLs omitted from reports; Authorization and bodies never logged; state files 0600, directories 0700 |
+| Restart | Completed jobs and checkpoints persist; the page detects a stalled run and offers resume |
+
+### Blocking items before any public invite
+
+1. No host, DNS record, certificate, credential or public listener was created; deployment still needs explicit owner approval.
+2. TLS must terminate at a managed proxy that preserves the exact Host header and enforces request-size and rate limits. The Python server is not a TLS server.
+3. Token distribution, rotation and revocation have only been tested locally, not with real testers.
+4. Base and long Ethereum ranges still need an operator snapshot or paid index plan; otherwise they correctly report `unknown`.
+5. The store is single-process. Do not run multiple server workers against the same directory.
+6. Retention and feedback summaries are manual commands, not scheduled jobs.
+7. Feedback is per-job JSON, not an analytics product; there is no dashboard.
+8. No independent security review of a live deployment has been performed.
