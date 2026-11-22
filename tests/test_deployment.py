@@ -129,6 +129,45 @@ class TokenLifecycleTests(unittest.TestCase):
             self.assertEqual(revoked.authenticate("Bearer " + other), "bob")
 
 
+class DeploymentContractTests(unittest.TestCase):
+    STORE = "/var/lib/chaininquest"
+
+    def test_unit_passes_the_store_to_preflight_and_server(self):
+        unit = (ROOT / "deploy/chaininquest.service").read_text(encoding="utf-8")
+        self.assertIn(f"preflight.py --store {self.STORE}", unit)
+        self.assertIn(f"web/server.py --port 8000 --store {self.STORE}", unit)
+
+    def test_all_components_share_the_same_default_store(self):
+        for name in ("backup.sh", "restore.sh"):
+            text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
+            self.assertIn(f"STORE=${{STORE:-{self.STORE}}}", text, name)
+        retention = (ROOT / "deploy/chaininquest-retention.service").read_text(encoding="utf-8")
+        self.assertIn(f"--store {self.STORE}", retention)
+        readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
+        self.assertIn(f"preflight.py --store {self.STORE}", readme)
+        self.assertIn(self.STORE, readme)
+
+    def test_readme_does_not_install_the_v41_tag_for_v42_files(self):
+        readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
+        self.assertNotIn("--branch v4.1.0-beta.1", readme)
+        self.assertIn("`deploy/` was introduced after `v4.1.0-beta.1`", readme)
+        self.assertIn("v4.2.0-beta.1", readme)
+
+    def test_health_check_sends_the_configured_host(self):
+        unit = (ROOT / "deploy/chaininquest.service").read_text(encoding="utf-8")
+        self.assertIn("CHAININQUEST_BETA_ORIGIN", unit)
+        self.assertIn("Host: $host", unit)
+        restore = (ROOT / "deploy/restore.sh").read_text(encoding="utf-8")
+        self.assertIn("Host: $host", restore)
+        self.assertIn("/etc/chaininquest/beta.env", restore)
+        readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
+        self.assertIn("Host: $BETA_HOST", readme)
+
+    def test_environment_example_documents_the_store_path(self):
+        example = (ROOT / "deploy/beta.env.example").read_text(encoding="utf-8")
+        self.assertIn(f"CHAININQUEST_STORE={self.STORE}", example)
+
+
 class RuntimeSafetyTests(unittest.TestCase):
     def test_job_lock_rejects_a_second_runner(self):
         with tempfile.TemporaryDirectory() as tmp:

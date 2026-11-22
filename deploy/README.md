@@ -7,18 +7,42 @@ consistent with the unit file if you change them.
 
 Nothing in this directory contains a real domain, token or API key.
 
-## Layout
+## Layout and version contract
 
 ```text
 /opt/chaininquest/
-  releases/v4.1.0-beta.1/   checked-out tagged source
-  app -> releases/v4.1.0-beta.1
+  releases/<v4.2-ref>/      checked-out V4.2 tag or verified commit
+  app -> releases/<v4.2-ref>
 /etc/chaininquest/beta.env  owner root:chaininquest, mode 0640
 /var/lib/chaininquest/      owner chaininquest:chaininquest, mode 0700
 /var/backups/chaininquest/  owner root, mode 0700
 ```
 
+The store path is fixed at `/var/lib/chaininquest` and must be the same in the
+systemd unit, `preflight.py`, `backup.sh`, `restore.sh` and the retention unit.
+`tests/test_deployment.py` checks this contract.
+
+`deploy/` was introduced after `v4.1.0-beta.1`. Do **not** install the V4.1 tag
+and expect these files to exist. Use the immutable V4.2 release tag once it is
+published, or the exact commit SHA verified in PR #6 before the release.
+
+| Contract | Value |
+| --- | --- |
+| Application path | `/opt/chaininquest/app` |
+| Service account | `chaininquest` (non-root) |
+| Store | `/var/lib/chaininquest` (0700) |
+| Listen address | `127.0.0.1:8000` |
+| Environment file | `/etc/chaininquest/beta.env` |
+| Backup directory | `/var/backups/chaininquest` |
+
 ## Install
+
+0. Install the base packages (Debian/Ubuntu):
+
+   ```sh
+   sudo apt-get update
+   sudo apt-get install -y git python3-venv curl ca-certificates
+   ```
 
 1. Create the service account and directories.
 
@@ -30,15 +54,20 @@ Nothing in this directory contains a real domain, token or API key.
    sudo install -d -o root -g chaininquest -m 0750 /etc/chaininquest
    ```
 
-2. Deploy the tagged release without touching `main`.
+2. Deploy an immutable V4.2 reference without touching `main`.
 
    ```sh
-   sudo -u chaininquest git clone --branch v4.1.0-beta.1 --depth 1 \
-     https://github.com/NextVariable/ChainInquest.git \
-     /opt/chaininquest/releases/v4.1.0-beta.1
-   sudo -u chaininquest python3 -m venv /opt/chaininquest/releases/v4.1.0-beta.1/.venv
-   sudo ln -sfn /opt/chaininquest/releases/v4.1.0-beta.1 /opt/chaininquest/app
+   V42_REF=v4.2.0-beta.1   # after publication; before release use the PR #6 head SHA
+   DIR=/opt/chaininquest/releases/$V42_REF
+   sudo -u chaininquest git clone https://github.com/NextVariable/ChainInquest.git "$DIR"
+   sudo -u chaininquest git -C "$DIR" checkout --detach "$V42_REF"
+   sudo -u chaininquest python3 -m venv "$DIR/.venv"
+   sudo ln -sfn "$DIR" /opt/chaininquest/app
+   test -f /opt/chaininquest/app/deploy/preflight.py
    ```
+
+   The final check fails loudly if the selected reference does not contain the
+   V4.2 deployment files.
 
 3. Issue the first token and write the environment file. Keep the token out of
    shell history and repository files.
@@ -66,17 +95,19 @@ Nothing in this directory contains a real domain, token or API key.
    ```
 
 The Python service listens only on `127.0.0.1:8000`. Caddy is the only public
-listener. `ExecStartPre` runs `deploy/preflight.py`, so an invalid origin, token
-map, permissions or root execution stops the unit before it serves traffic.
+listener. `ExecStartPre` runs `deploy/preflight.py --store /var/lib/chaininquest`,
+so an invalid origin, token map, permissions or root execution stops the unit
+before it serves traffic.
 
 ## Verify on the VPS
 
 Run these after every deploy; all must pass.
 
 ```sh
+BETA_HOST=beta.example.org               # the hostname in CHAININQUEST_BETA_ORIGIN
 systemctl is-active chaininquest
 ss -ltnp | grep -E ':8000|:443'          # 8000 only on 127.0.0.1
-curl -fsS http://127.0.0.1:8000/healthz  # {"status":"ok",...}
+curl -fsS -H "Host: $BETA_HOST" http://127.0.0.1:8000/healthz  # {"status":"ok",...}
 curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: wrong.example' \
   http://127.0.0.1:8000/healthz          # 403
 curl -s -o /dev/null -w '%{http_code}\n' https://BETA_HOST/api/jobs/00000000000000000000000000000000
@@ -84,6 +115,11 @@ curl -s -o /dev/null -w '%{http_code}\n' https://BETA_HOST/api/jobs/000000000000
 curl -sI https://BETA_HOST | grep -i strict-transport-security
 sudo journalctl -u chaininquest -n 50 --no-pager
 ```
+
+The loopback health check must send the configured Host header; a plain
+`curl http://127.0.0.1:8000/healthz` gets 403 because the service rejects any
+other Host. `ExecStartPost` derives the header from `CHAININQUEST_BETA_ORIGIN`
+and fails the unit if the service does not answer within 20 seconds.
 
 - Confirm the exact HTTPS origin in `beta.env` matches the public hostname,
   including the port only if it is non-default.
@@ -139,6 +175,12 @@ removal. Export feedback summaries before deleting aged jobs.
 
 Do not move or edit the published `v4.1.0-beta.1` tag.
 
+Because the unit runs `deploy/preflight.py` from the application path, the
+rollback target must also contain `deploy/`. For the first V4.2 rollout there is
+no earlier deployed V4.2 release: roll back by stopping the service and
+restoring the pre-upgrade store, or keep a copy of `deploy/` outside the release
+directory before pointing `app` at a V4.1 checkout.
+
 ## Runbook
 
 | Symptom | Check | Action |
@@ -159,7 +201,7 @@ Do not move or edit the published `v4.1.0-beta.1` tag.
 
 Before starting the service:
 
-- [ ] `v4.1.0-beta.1` is checked out at `/opt/chaininquest/releases/v4.1.0-beta.1`; the tag was not moved.
+- [ ] The V4.2 tag (or the verified PR #6 SHA) is checked out at `/opt/chaininquest/releases/<v4.2-ref>`; the V4.1 tag was not moved.
 - [ ] Service account is non-root and owns `/var/lib/chaininquest` with mode 0700.
 - [ ] `/etc/chaininquest/beta.env` is root:chaininquest 0640 and contains the exact HTTPS origin.
 - [ ] Token digests are unique, lowercase SHA-256, one per invited tester.
