@@ -1,16 +1,16 @@
-# On-chain Address Inspector
+# ChainInquest
 
 [中文](README.md) · [Full usage guide](docs/usage.md) · [Contributing](CONTRIBUTING.md)
 
-[![CI](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml)
+[![CI](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml)
 
 An Agent Skill for inspecting wallet and contract activity on Monad Testnet. Given an address and a bounded block range, it returns top-level transactions, receipt outcomes, native-coin amounts, direct-caller concentration, and traceable evidence. Read-only; no wallet connection required. Runtime uses the Python 3.10+ standard library, with optional curl transport.
 
 ## Install
 
 ```sh
-git clone https://github.com/NextVariable/onchain-address-inspector-skill.git
-cd onchain-address-inspector-skill
+git clone https://github.com/NextVariable/ChainInquest.git
+cd ChainInquest
 skill_destination="${CODEX_HOME:-$HOME/.codex}/skills/onchain-address-inspector"
 test ! -e "$skill_destination" && mkdir -p "$(dirname "$skill_destination")" && cp -R skills/onchain-address-inspector "$skill_destination"
 ```

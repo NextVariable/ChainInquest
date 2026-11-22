@@ -1,6 +1,6 @@
 # 完整使用说明 / Full usage guide
 
-[![自动测试 / CI](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml)
+[![自动测试 / CI](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml)
 
 核查钱包与合约地址的链上交易活动，输出成功状态、原生币金额、直接交互集中度和可追溯证据。目前支持 Monad 测试网。只读、无需连接钱包、基础区块查询无需 API 密钥；默认运行只依赖 Python 3.10+ 标准库，curl 是可选传输。它扫描顶层交易，核对回执和区块身份，以整数 wei 计算成功交易金额，并明确说明漏查、未知状态和统计边界。
 
@@ -17,8 +17,8 @@ Concentration describes which addresses directly send transactions to the target
 Clone the repository and copy the complete Skill into the Codex discovery directory. Installation stops if the destination already exists; inspect existing files before updating to preserve your changes.
 
 ```sh
-git clone https://github.com/NextVariable/onchain-address-inspector-skill.git
-cd onchain-address-inspector-skill
+git clone https://github.com/NextVariable/ChainInquest.git
+cd ChainInquest
 
 skill_destination="${CODEX_HOME:-$HOME/.codex}/skills/onchain-address-inspector"
 test ! -e "$skill_destination" && mkdir -p "$(dirname "$skill_destination")" && cp -R skills/onchain-address-inspector "$skill_destination"

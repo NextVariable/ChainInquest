@@ -1,16 +1,16 @@
-# 链上地址核查
+# ChainInquest
 
 [English](README.en.md) · [完整使用说明](docs/usage.md) · [贡献指南](CONTRIBUTING.md)
 
-[![CI](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/onchain-address-inspector-skill/actions/workflows/ci.yml)
+[![CI](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml)
 
 一个核查 Monad 测试网钱包与合约活动的 Agent Skill。给定地址和区块范围，返回顶层交易、回执成功状态、原生币金额、直接发起地址集中度，以及可追溯的交易证据。只读，无需连接钱包；运行只依赖 Python 3.10+ 标准库，curl 可选。
 
 ## 安装
 
 ```sh
-git clone https://github.com/NextVariable/onchain-address-inspector-skill.git
-cd onchain-address-inspector-skill
+git clone https://github.com/NextVariable/ChainInquest.git
+cd ChainInquest
 skill_destination="${CODEX_HOME:-$HOME/.codex}/skills/onchain-address-inspector"
 test ! -e "$skill_destination" && mkdir -p "$(dirname "$skill_destination")" && cp -R skills/onchain-address-inspector "$skill_destination"
 ```

@@ -4,7 +4,7 @@ license: MIT
 description: 只读核查 Monad 测试网钱包或合约地址在有限区块范围的顶层交易、回执状态、原生币金额和直接发起地址集中度，提供覆盖说明与交易证据。适用于地址活动核查和少数地址反复交互分析，不适用于主网、完整历史、交易执行或投资建议。 Read-only wallet/contract activity inspection with receipts, integer native amounts, concentration and coverage evidence. Currently Monad Testnet only; excludes mainnet, complete history, transaction execution and investment advice.
 ---
 
-# 链上地址核查 / On-chain Address Inspector
+# ChainInquest
 
 把用户地址和区块范围转换为参数，在本 Skill 目录执行 `python3 scripts/query.py --address ADDRESS --start-block START --end-block END --progress`，或用 `--recent-blocks N`。两种范围互斥；未指定时默认最近100块，最大1000块，两端包含。运行需Python3.10+及可用SSL；完整复制scripts目录，不能只复制query.py。凭证通过环境变量 `MONAD_TESTNET_RPC` 传入，不展示凭证URL。完整历史不可用，请明确查询窗口。
 
