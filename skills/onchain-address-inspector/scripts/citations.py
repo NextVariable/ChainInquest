@@ -3,6 +3,7 @@
 import hashlib
 import json
 
+from chains import CHAINS
 from evidence import EXPLORER
 
 
@@ -15,6 +16,7 @@ def digest(value):
 
 def evidence_catalog(chain_id, evidence, sources):
     catalog = {}
+    explorer = CHAINS[chain_id].explorer if chain_id in CHAINS else EXPLORER
     for group, rows in evidence.items():
         if group not in {"transactions", "events", "unverified_logs"}:
             continue
@@ -44,7 +46,7 @@ def evidence_catalog(chain_id, evidence, sources):
                 if "receipt_evidence" in row
                 else None,
                 "sources": [key for key in source_keys if key in sources],
-                "explorer_url": EXPLORER + tx_hash if tx_hash else None,
+                "explorer_url": explorer + tx_hash if tx_hash else None,
             }
             row["evidence_ref"] = identity
     return catalog

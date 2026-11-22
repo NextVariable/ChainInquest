@@ -13,8 +13,8 @@ import time
 import urllib.parse
 from itertools import pairwise
 
+from chains import CHAINS
 from evidence import (
-    EXPLORER,
     QueryError,
     apply_receipt_status,
     metrics,
@@ -126,9 +126,11 @@ def validate(args):
 
 
 def scan(args, client=None):
+    chain_id = getattr(args, "chain_id", CHAIN_ID)
+    chain = CHAINS[chain_id]
     out = {
         "schema_version": "1.7",
-        "network": "Monad Testnet",
+        "network": chain.name,
         "chain_id": None,
         "address": args.address.lower()
         if re.fullmatch(r"0x[0-9a-fA-F]{40}", args.address)
@@ -162,7 +164,7 @@ def scan(args, client=None):
         "source": {
             "rpc": "configured endpoint (URL omitted)",
             "rpc_profile": rpc_profile(args.rpc),
-            "explorer": EXPLORER,
+            "explorer": chain.explorer,
         },
         "code_at_end_block": None,
     }
@@ -181,8 +183,8 @@ def scan(args, client=None):
         )
         out["total_timeout_seconds"] = args.total_timeout
         out["chain_id"] = quantity(c.call("eth_chainId", []))
-        if out["chain_id"] != CHAIN_ID:
-            raise QueryError(f"错误网络：期望 {CHAIN_ID}，实际 {out['chain_id']}；停止")
+        if out["chain_id"] != chain_id:
+            raise QueryError(f"错误网络：期望 {chain_id}，实际 {out['chain_id']}；停止")
         latest = quantity(c.call("eth_blockNumber", []))
         if args.start_block is not None:
             start, end = args.start_block, args.end_block

@@ -1,0 +1,85 @@
+{
+  "goal": "overview",
+  "budget_seconds": 210,
+  "scope": {
+    "recent_blocks": 2
+  },
+  "manifest": {
+    "schema_version": "1",
+    "project": "Circle USDC and CCTP",
+    "deployments": [
+      {
+        "id": "circle-monad-testnet",
+        "chain_id": 10143,
+        "contracts": [
+          {
+            "address": "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+              ]
+            }
+          },
+          {
+            "address": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/cctp/references/contract-addresses"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "circle-ethereum",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+              ]
+            }
+          },
+          {
+            "address": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/cctp/references/contract-addresses"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "circle-base",
+        "chain_id": 8453,
+        "contracts": [
+          {
+            "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+              ]
+            }
+          },
+          {
+            "address": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/cctp/references/contract-addresses"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

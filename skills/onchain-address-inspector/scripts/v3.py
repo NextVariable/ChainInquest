@@ -3,17 +3,17 @@
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 import time
 from pathlib import Path
 
 from adapters import RpcAdapter
+from chains import CHAINS
 from evidence import QueryError, quantity
 from investigation import investigate
 from jobs import JobStore, checkpoint, write
 from project import contracts, investigate_project, load_json
-from query import CHAIN_ID, RPC, parser, validate
+from query import parser, validate
 from rpc_client import Client
 
 MAX_CONTRACTS = 8
@@ -27,7 +27,26 @@ def plan_investigation(request, now=None):
         if request.get("goal", "overview") not in {"overview", "activity", "flows"}:
             raise ValueError
         scope = request["scope"]
-        name, entries = contracts(request["manifest"], allow_unknown_deployment=True)
+        manifest = request["manifest"]
+        deployments = manifest["deployments"]
+        chain_ids = {d["chain_id"] for d in deployments}
+        if (
+            not chain_ids
+            or not chain_ids <= CHAINS.keys()
+            or any(type(i) is not int for i in chain_ids)
+        ):
+            raise ValueError
+        entries = []
+        for chain_id in sorted(chain_ids):
+            name, chain_entries = contracts(
+                {**manifest, "deployments": [d for d in deployments if d["chain_id"] == chain_id]},
+                chain_id=chain_id,
+                allow_unknown_deployment=True,
+            )
+            entries.extend(chain_entries)
+        chain_ids = sorted(
+            {e["chain_id"] for e in entries if e["attribution"]["status"] == "confirmed"}
+        )
         if len(entries) > MAX_CONTRACTS or not any(
             e["attribution"]["status"] == "confirmed" for e in entries
         ):
@@ -37,21 +56,26 @@ def plan_investigation(request, now=None):
         if set(scope) == {"days"} and type(scope["days"]) is int and scope["days"] in (7, 30):
             end = now.replace(microsecond=0)
             start = end - dt.timedelta(days=scope["days"])
-            ranges[str(CHAIN_ID)] = {"from_time": start.isoformat(), "to_time": end.isoformat()}
+            ranges = {
+                str(i): {"from_time": start.isoformat(), "to_time": end.isoformat()}
+                for i in chain_ids
+            }
         elif (
             set(scope) == {"recent_blocks"}
             and type(scope["recent_blocks"]) is int
             and 1 <= scope["recent_blocks"] <= MAX_BLOCKS
         ):
-            ranges[str(CHAIN_ID)] = dict(scope)
+            ranges = {str(i): dict(scope) for i in chain_ids}
         elif (
             set(scope) == {"start_block", "end_block"}
             and all(type(v) is int for v in scope.values())
             and 0 <= scope["start_block"] <= scope["end_block"] < 2**63
             and scope["end_block"] - scope["start_block"] < MAX_BLOCKS
         ):
-            ranges[str(CHAIN_ID)] = dict(scope)
+            ranges = {str(i): dict(scope) for i in chain_ids}
         else:
+            raise ValueError
+        if "start_block" in scope and len(chain_ids) != 1:
             raise ValueError
         budget = request.get("budget_seconds", 120)
         if type(budget) is not int or not 15 <= budget <= 240:
@@ -78,7 +102,7 @@ def plan_investigation(request, now=None):
 
 
 def rpc_url(chain_id):
-    return os.environ.get("MONAD_TESTNET_RPC") or RPC
+    return CHAINS[chain_id].endpoint()
 
 
 def resolve_recent(chain_id, bounds, seconds):
@@ -157,7 +181,9 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
         results = {}
         checkpoint(directory, state, "planning", status="running", attempts=state["attempts"] + 1)
         try:
-            for chain_key, initial in plan["ranges"].items():
+            for position, (chain_key, initial) in enumerate(plan["ranges"].items()):
+                chain_budget = (deadline - time.monotonic()) / (len(plan["ranges"]) - position)
+                chain_deadline = time.monotonic() + chain_budget
                 chain = int(chain_key)
                 entries = [
                     e
@@ -167,7 +193,7 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                 if chain_key not in pinned:
                     try:
                         pinned[chain_key] = resolve_fn(
-                            chain, initial, max(1, min(12, int(deadline - time.monotonic())))
+                            chain, initial, max(1, min(12, int(chain_deadline - time.monotonic())))
                         )
                     except QueryError as error:
                         issues.append({"chain_id": chain, "category": error.category})
@@ -176,7 +202,7 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                 pending = [e for e in entries if f"{chain}-{e['address']}" not in done]
                 for offset, entry in enumerate(pending):
                     key = f"{chain}-{entry['address']}"
-                    left = int(deadline - time.monotonic())
+                    left = int(chain_deadline - time.monotonic())
                     if left < 2:
                         issues.append({"contract": key, "category": "investigation_budget"})
                         break

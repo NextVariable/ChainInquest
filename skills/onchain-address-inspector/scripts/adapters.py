@@ -142,17 +142,18 @@ class RpcAdapter:
 
 
 class EtherscanAdapter:
-    """Bounded V2 normal-transaction discovery for Monad Testnet."""
+    """Bounded V2 normal-transaction discovery on the selected EVM network."""
 
-    def __init__(self, key, client):
+    def __init__(self, key, client, chain_id=10143):
         self.key = key
+        self.chain_id = chain_id
         self.client = client
 
     def page(self, address, start, end, page):
         timeout = min(self.client.remaining(), self.client.timeout)
         params = urlencode(
             {
-                "chainid": 10143,
+                "chainid": self.chain_id,
                 "module": "account",
                 "action": "txlist",
                 "address": address,

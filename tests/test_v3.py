@@ -55,11 +55,18 @@ class ContractQuery:
         )
         config.address = entry["address"]
         config.verify_contract = True
+        config.chain_id = entry["chain_id"]
         ledger = Ledger()
         call = ledger.call
-        ledger.call = (
-            lambda method, params: "0x6000" if method == "eth_getCode" else call(method, params)
-        )
+
+        def reply(method, params):
+            if method == "eth_getCode":
+                return "0x6000"
+            if method == "eth_chainId":
+                return hex(entry["chain_id"])
+            return call(method, params)
+
+        ledger.call = reply
         return investigate(config, ledger)
 
 
@@ -104,3 +111,38 @@ class InvestigationJobTests(unittest.TestCase):
             )
         with self.assertRaises(QueryError):
             plan_investigation({**request(), "scope": {"recent_blocks": 100000}})
+
+    def test_chain_specific_metrics_and_evidence(self):
+        payload = request()
+        payload["scope"] = {"recent_blocks": 3}
+        first = payload["manifest"]["deployments"][0]
+        for chain_id in (1, 8453):
+            payload["manifest"]["deployments"].append({**first, "chain_id": chain_id})
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            job = store.create(plan_investigation(payload))
+            state = run(
+                store,
+                job,
+                query_fn=ContractQuery(),
+                resolve_fn=lambda *args: {"start_block": 1, "end_block": 3},
+            )
+            self.assertEqual(state["status"], "complete")
+            results = store.result(job)["chains"]
+            for cid, host in (
+                ("1", "etherscan.io"),
+                ("8453", "basescan.org"),
+                ("10143", "testnet.monadscan.com"),
+            ):
+                report = results[cid]["report"]
+                self.assertEqual(report["deterministic_metrics"]["transactions"], 1)
+                tx = report["on_chain_evidence"]["transactions"][0]
+                self.assertTrue(tx["evidence_ref"].startswith(f"tx:{cid}:"))
+                self.assertTrue(
+                    report["evidence_index"][tx["evidence_ref"]]["explorer_url"].startswith(
+                        f"https://{host}/"
+                    )
+                )
+                if cid != "10143":
+                    self.assertIn("value_native", tx)
+                    self.assertNotIn("value_mon", tx)

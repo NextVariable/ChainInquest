@@ -7,6 +7,7 @@ from copy import copy
 
 from adapters import ADDRESS, HASH, EtherscanAdapter, RpcAdapter
 from analytics import analyze
+from chains import CHAINS
 from event_decoder import (
     BYTES,
     TOPICS,
@@ -346,13 +347,17 @@ def classify_interactions(rpc, txs):
 
 def investigate(args, client=None, index=None, now=None):
     now = int(dt.datetime.now(UTC).timestamp()) if now is None else now
+    chain_id = getattr(args, "chain_id", CHAIN_ID)
+    chain = CHAINS[chain_id]
     address = args.address.lower() if ADDRESS.fullmatch(args.address) else None
     coverage = {
         name: {"complete": False, "gaps": []} for name in ("transactions", "events", "receipts")
     }
     coverage["complete"] = False
     source = {
-        "rpc": "configured Monad Testnet endpoint (URL omitted)",
+        "rpc": "configured endpoint (URL omitted)",
+        "network": chain.name,
+        "native_symbol": chain.symbol,
         "rpc_profile": rpc_profile(args.rpc),
         "limits": {
             "timeout_seconds": args.timeout,
@@ -400,8 +405,8 @@ def investigate(args, client=None, index=None, now=None):
         )
         rpc = RpcAdapter(raw_client)
         source["chain_id"] = quantity(rpc.call("eth_chainId", []))
-        if source["chain_id"] != CHAIN_ID:
-            raise QueryError("Expected Monad Testnet chain ID 10143", "wrong_chain")
+        if source["chain_id"] != chain_id:
+            raise QueryError(f"Expected chain ID {chain_id}", "wrong_chain")
         tip, tip_hash, tip_seconds = rpc.header("latest")
         time_gaps = []
         progress.update("range_resolution")
@@ -467,7 +472,7 @@ def investigate(args, client=None, index=None, now=None):
                     txs, coverage["transactions"] = legacy_transactions(args, rpc, first, last)
                 else:
                     key = os.environ.get("ETHERSCAN_API_KEY")
-                    index = index or (EtherscanAdapter(key, raw_client) if key else None)
+                    index = index or (EtherscanAdapter(key, raw_client, chain_id) if key else None)
                     source["transaction_index"] = "Etherscan V2, normal txlist"
                     txs, coverage["transactions"] = indexed_transactions(
                         rpc, index, address, first, last
@@ -572,6 +577,14 @@ def investigate(args, client=None, index=None, now=None):
             if e.get("decimals_error")
         ],
     }
+    if chain_id != CHAIN_ID:
+        for tx in txs:
+            tx["value_native"] = tx.pop("value_mon")
+            tx["explorer_url"] = chain.explorer + tx["hash"]
+        if analytics["transactions"]:
+            native = analytics["transactions"]["native_value_successful_top_level_only"]
+            for direction in ("in", "out"):
+                native[f"{direction}_native"] = native.pop(f"{direction}_mon")
     evidence = cache.export(txs, events, rejected, stable)
     return {
         "schema_version": "2.0",

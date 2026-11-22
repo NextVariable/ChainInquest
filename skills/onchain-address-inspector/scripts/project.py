@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from adapters import ADDRESS, HASH
+from chains import CHAINS
 from citations import digest, evidence_catalog
 from event_decoder import log_fields, token_event
 from evidence import QueryError, apply_receipt_status, invalid_constant, unique_object
@@ -303,6 +304,8 @@ def investigate_project(manifest_path, *, chain_id=CHAIN_ID, require_verified_co
     provenance = {
         "chain_id": chain_id,
         "method": "saved_address_reports",
+        "network": CHAINS[chain_id].name,
+        "native_symbol": CHAINS[chain_id].symbol,
         "query_started_at": started,
         "reports": {},
     }
