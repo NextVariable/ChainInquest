@@ -1,0 +1,39 @@
+[Unit]
+Description=ChainInquest closed beta web service
+Documentation=file:///opt/chaininquest/app/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=chaininquest
+Group=chaininquest
+WorkingDirectory=/opt/chaininquest/app
+EnvironmentFile=/etc/chaininquest/beta.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/chaininquest/app/.venv/bin/python /opt/chaininquest/app/deploy/preflight.py --store /var/lib/chaininquest
+ExecStart=/opt/chaininquest/app/.venv/bin/python /opt/chaininquest/app/web/server.py --port 8000 --store /var/lib/chaininquest
+ExecStartPost=/bin/sh -c 'host=$(printf %s "$CHAININQUEST_BETA_ORIGIN" | cut -d/ -f3); for i in $(seq 1 20); do /usr/bin/curl -fsS -H "Host: $host" http://127.0.0.1:8000/healthz >/dev/null && exit 0; sleep 1; done; exit 1'
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/chaininquest
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=1G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

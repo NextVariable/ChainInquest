@@ -1,0 +1,14 @@
+[Unit]
+Description=ChainInquest retention dry run
+Documentation=file:///opt/chaininquest/app/deploy/README.md
+
+[Service]
+Type=oneshot
+User=chaininquest
+Group=chaininquest
+WorkingDirectory=/opt/chaininquest/app
+ExecStart=/opt/chaininquest/app/.venv/bin/python /opt/chaininquest/app/scripts/beta_ops.py --store /var/lib/chaininquest --days 30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/chaininquest
