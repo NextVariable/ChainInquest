@@ -1,0 +1,29 @@
+{
+  "goal": "overview",
+  "scope": {
+    "start_block": 26468359,
+    "end_block": 26468359
+  },
+  "budget_seconds": 150,
+  "manifest": {
+    "schema_version": "1",
+    "project": "Lido stETH",
+    "deployments": [
+      {
+        "id": "lido",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://docs.lido.fi/deployed-contracts/"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -32,7 +32,7 @@ def evidence_catalog(chain_id, evidence, sources):
                 identity = f"log:{chain_id}:{row['block_hash']}:{row['log_index']}"
                 tx_hash = row["transaction_hash"]
                 raw = row["raw_log"]
-                source_keys = ["rpc"]
+                source_keys = ["rpc", "event_index"]
             else:
                 raw = row["raw_log"]
                 identity = f"rejected:{digest(raw)}:{position}"

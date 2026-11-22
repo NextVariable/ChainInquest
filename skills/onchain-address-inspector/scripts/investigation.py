@@ -125,6 +125,8 @@ def indexed_transactions(rpc, index, address, start, end):
             "gaps": [{"reason": "index_key_required", "from": start, "to": end}],
         }
     candidates, gaps = index.discover(address, start, end)
+    attestation = getattr(index, "coverage", {})
+    attested = attestation.get("attested") is True
     txs = []
     for h, n, claims in candidates:
         try:
@@ -136,10 +138,16 @@ def indexed_transactions(rpc, index, address, start, end):
     # V2 does not attest an indexed-through height for txlist. Report pagination
     # completion independently and never infer that an empty page means no activity.
     return txs, {
-        "method": "etherscan_v2_txlist",
-        "complete": False,
+        "method": getattr(index, "name", "etherscan_v2_txlist"),
+        "complete": attested and not gaps,
+        "index_coverage": attestation,
         "pagination_and_corroboration_complete": not gaps,
-        "gaps": gaps + [{"reason": "index_coverage_not_attested", "from": start, "to": end}],
+        "gaps": gaps
+        + (
+            []
+            if attested
+            else [{"reason": "index_coverage_not_attested", "from": start, "to": end}]
+        ),
     }
 
 
@@ -168,6 +176,7 @@ def compare_index_claims(tx, coverage):
     # Only the RPC-derived record contributes to sample metrics.
     if mismatches or missing:
         coverage["pagination_and_corroboration_complete"] = False
+        coverage["complete"] = False
         coverage["gaps"].append(
             {
                 "reason": "index_claim_mismatch" if mismatches else "index_claim_unverified",
@@ -208,14 +217,19 @@ def token_metadata(rpc, token, block):
     return int(raw, 16)
 
 
-def get_events(rpc, cache, address, first, last, abi, window):
+def get_events(rpc, cache, address, first, last, abi, window, history=None):
     participant = "0x" + "0" * 24 + address[2:]
     filters = [
         {"topics": [list(TOPICS), participant]},
         {"topics": [list(TOPICS), None, participant]},
         {"address": address},
     ]
-    rows, gaps = rpc.logs(first, last, filters)
+    supplied = getattr(history, "logs", None)
+    if supplied is None:
+        rows, gaps = rpc.logs(first, last, filters)
+    else:
+        rows, gaps = [(row, first, last, 3) for row in supplied], []
+        filters.append({"operator_scope": "emitter_or_erc20_participant_v1"})
     accepted, rejected, conflicts = {}, [], set()
     decimals = {}
     for raw, a, b, i in rows:
@@ -226,7 +240,10 @@ def get_events(rpc, cache, address, first, last, abi, window):
                 not a <= event["block"] <= b
                 or (i == 2 and event["contract"] != address)
                 or (
-                    i < 2
+                    i == 3
+                    and event["contract"] != address
+                    and not (topics and topics[0] in TOPICS and participant in topics[1:3])
+                    or i < 2
                     and (
                         len(topics) <= i + 1
                         or topics[0] not in TOPICS
@@ -312,14 +329,20 @@ def get_events(rpc, cache, address, first, last, abi, window):
         events,
         rejected,
         {
-            "method": "rpc_getLogs_and_receipts",
+            "method": "rpc_getLogs_and_receipts"
+            if supplied is None
+            else "operator_snapshot_and_rpc_receipts",
             "complete": not gaps,
             "filters": filters,
             "gaps": gaps,
             "rpc_attempt_failures": rpc.log_failures,
             "rpc_answered_ranges": rpc.log_answered_ranges,
             "initial_log_span": rpc.log_span,
-            "completeness_basis": "RPC responses, no independent omission proof",
+            "completeness_basis": (
+                "RPC responses, no independent omission proof"
+                if supplied is None
+                else "operator-attested log scope, included logs reconciled against RPC"
+            ),
         },
     )
 
@@ -472,8 +495,18 @@ def investigate(args, client=None, index=None, now=None):
                     txs, coverage["transactions"] = legacy_transactions(args, rpc, first, last)
                 else:
                     key = os.environ.get("ETHERSCAN_API_KEY")
+                    if getattr(args, "verify_contract", False) and index is None:
+                        from history import BLOCKSCOUT, BlockscoutIndex, SnapshotIndex
+
+                        snapshot_root = os.environ.get("CHAININQUEST_HISTORY_DIR")
+                        if snapshot_root:
+                            index = SnapshotIndex(snapshot_root, chain_id, rpc)
+                        elif not key and chain_id in BLOCKSCOUT:
+                            index = BlockscoutIndex(chain_id, raw_client, rpc)
                     index = index or (EtherscanAdapter(key, raw_client, chain_id) if key else None)
-                    source["transaction_index"] = "Etherscan V2, normal txlist"
+                    source["transaction_index"] = getattr(
+                        index, "name", "Etherscan V2, normal txlist"
+                    )
                     txs, coverage["transactions"] = indexed_transactions(
                         rpc, index, address, first, last
                     )
@@ -506,8 +539,10 @@ def investigate(args, client=None, index=None, now=None):
                             tx["receipt_error"] = failures[tx["hash"]]
                 progress.update("events")
                 events, rejected, coverage["events"] = get_events(
-                    rpc, cache, address, first, last, abi, window
+                    rpc, cache, address, first, last, abi, window, index
                 )
+                if getattr(index, "logs", None) is not None:
+                    source["event_index"] = index.name
                 classify_interactions(rpc, txs)
             progress.update("snapshot")
             stable = rpc.header(last, fresh=True) == anchor and (

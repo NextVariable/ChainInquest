@@ -1,0 +1,29 @@
+{
+  "goal": "overview",
+  "scope": {
+    "start_block": 26468359,
+    "end_block": 26468359
+  },
+  "budget_seconds": 150,
+  "manifest": {
+    "schema_version": "1",
+    "project": "Aave V3 Pool",
+    "deployments": [
+      {
+        "id": "aave",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fa4E2",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://aave.com/docs/aave-v3/markets/data"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "goal": "overview",
+  "scope": {
+    "start_block": 26468359,
+    "end_block": 26468359
+  },
+  "budget_seconds": 150,
+  "manifest": {
+    "schema_version": "1",
+    "project": "Uniswap V3 Factory",
+    "deployments": [
+      {
+        "id": "uniswap",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://docs.uniswap.org/contracts/v3/reference/deployments/ethereum-deployments"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

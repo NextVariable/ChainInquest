@@ -1,0 +1,29 @@
+{
+  "goal": "overview",
+  "scope": {
+    "start_block": 26468359,
+    "end_block": 26468359
+  },
+  "budget_seconds": 150,
+  "manifest": {
+    "schema_version": "1",
+    "project": "Circle USDC",
+    "deployments": [
+      {
+        "id": "circle",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "goal": "overview",
+  "scope": {
+    "start_block": 26468359,
+    "end_block": 26468359
+  },
+  "budget_seconds": 150,
+  "manifest": {
+    "schema_version": "1",
+    "project": "ENS Registry",
+    "deployments": [
+      {
+        "id": "ens",
+        "chain_id": 1,
+        "contracts": [
+          {
+            "address": "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e",
+            "attribution": {
+              "status": "confirmed",
+              "sources": [
+                "https://docs.ens.domains/learn/deployments/"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
