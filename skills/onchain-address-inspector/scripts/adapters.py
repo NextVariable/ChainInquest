@@ -3,6 +3,7 @@
 import concurrent.futures
 import http.client
 import json
+import os
 import re
 import ssl
 import threading
@@ -20,6 +21,15 @@ LOG_SPAN = 10_000
 MAX_LOG_QUERIES = 120
 MAX_LOGS = 2000
 MAX_LOG_BYTES = 8 * 1024 * 1024
+CLAIMS = {
+    "from": ADDRESS,
+    "to": re.compile(r"(?:0x[0-9a-fA-F]{40})?"),
+    "value": re.compile(r"[0-9]{1,78}"),
+    "blockHash": HASH,
+    "timeStamp": re.compile(r"[0-9]{1,20}"),
+    "txreceipt_status": re.compile(r"[01]"),
+    "isError": re.compile(r"[01]"),
+}
 
 
 class RpcAdapter:
@@ -92,21 +102,57 @@ class RpcAdapter:
                 raise QueryError("Timestamp boundary could not be validated", "invalid_block")
         return lo
 
-    def logs(self, start, end, filters):
-        """Return raw evidence and uncompleted filter/block ranges."""
-        evidence, gaps = [], []
+    def logs(self, start, end, filters, state=None, save=None):
+        """Return raw evidence and uncompleted filter/block ranges.
+
+        When a state dict is supplied, answered chunks and their raw logs are
+        persisted so a later run resumes instead of re-querying from scratch.
+        """
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != 1
+            or state.get("start") != start
+            or state.get("end") != end
+            or state.get("filters") != len(filters)
+        ):
+            state = {
+                "schema_version": 1,
+                "provider": "rpc_getLogs",
+                "start": start,
+                "end": end,
+                "filters": len(filters),
+                "answered": [],
+                "rows": [],
+                "gaps": [],
+                "requests": 0,
+                "done": False,
+            }
+        answered = {tuple(item) for item in state["answered"] if isinstance(item, list)}
+        evidence = [
+            (row[0], row[1], row[2], row[3])
+            for row in state["rows"]
+            if isinstance(row, list) and len(row) == 4
+        ]
+        gaps = list(state["gaps"])
         budget = MAX_LOG_QUERIES
-        bytes_left = MAX_LOG_BYTES
-        work = deque((start, end, i) for i in range(len(filters)))
-        while work:
-            a, b, i = work.popleft()
+        bytes_left = MAX_LOG_BYTES - sum(
+            len(json.dumps(row, ensure_ascii=True)) for row, _, _, _ in evidence
+        )
+        chunks = deque()
+        for index in range(len(filters)):
+            a = start
+            while a <= end:
+                b = min(end, a + self.log_span - 1)
+                if (a, b, index) not in answered:
+                    chunks.append((a, b, index))
+                a = b + 1
+        while chunks:
+            a, b, i = chunks.popleft()
             if budget <= 0 or bytes_left <= 0 or len(evidence) >= MAX_LOGS:
                 gaps.append({"from": a, "to": b, "filter": i, "reason": "log_budget"})
                 continue
-            if b - a + 1 > self.log_span:
-                work.append((a + self.log_span, b, i))
-                b = a + self.log_span - 1
             budget -= 1
+            state["requests"] += 1
             try:
                 rows = self.call(
                     "eth_getLogs", [{"fromBlock": hex(a), "toBlock": hex(b), **filters[i]}]
@@ -119,16 +165,20 @@ class RpcAdapter:
                         gaps.append({"from": a, "to": b, "filter": i, "reason": "log_budget"})
                         break
                     evidence.append((row, a, b, i))
+                    state["rows"].append([row, a, b, i])
                     bytes_left -= size
                 else:
                     self.log_answered_ranges.append({"from": a, "to": b, "filter": i})
+                    state["answered"].append([a, b, i])
+                    if save:
+                        save(state)
             except QueryError as error:
                 code = str(error) if re.fullmatch(r"RPC error code -?[0-9]+", str(error)) else None
                 label = code or error.category
                 self.log_failures[label] = self.log_failures.get(label, 0) + 1
                 if error.category in {"rpc_error", "invalid_response"} and a < b:
                     mid = (a + b) // 2
-                    work.extend([(a, mid, i), (mid + 1, b, i)])
+                    chunks.extend([(a, mid, i), (mid + 1, b, i)])
                 else:
                     gaps.append({"from": a, "to": b, "filter": i, "reason": error.category})
                     if error.category in {
@@ -138,6 +188,10 @@ class RpcAdapter:
                         "tls_failure",
                     }:
                         budget = 0
+        state["gaps"] = [gap for gap in gaps if gap not in state["gaps"]]
+        state["done"] = not chunks and not state["gaps"]
+        if save:
+            save(state)
         return evidence, gaps
 
 
@@ -148,8 +202,19 @@ class EtherscanAdapter:
         self.key = key
         self.chain_id = chain_id
         self.client = client
+        self.coverage = {"basis": "unverified", "attested": False, "gaps": []}
 
     def page(self, address, start, end, page):
+        for attempt in range(3):
+            try:
+                return self._page(address, start, end, page)
+            except QueryError as error:
+                if error.category not in {"index_http_error", "index_transport"} or attempt == 2:
+                    raise
+                if hasattr(self.client, "pause"):
+                    self.client.pause(0.5 * (attempt + 1))
+
+    def _page(self, address, start, end, page):
         timeout = min(self.client.remaining(), self.client.timeout)
         params = urlencode(
             {
@@ -175,7 +240,9 @@ class EtherscanAdapter:
                 response = connection.getresponse()
                 body = response.read(2**20 + 1)
                 if response.status != 200 or len(body) > 2**20:
-                    raise QueryError("Index HTTP failure or oversized page", "index_http_error")
+                    raise QueryError(
+                        f"Index HTTP failure {response.status}", "index_http_error"
+                    )
                 return json.loads(
                     body, object_pairs_hook=unique_object, parse_constant=invalid_constant
                 )
@@ -210,11 +277,39 @@ class EtherscanAdapter:
             raise QueryError("Index rejected query or returned malformed page", "index_response")
         return rows
 
-    def discover(self, address, start, end):
-        rows, gaps = [], []
-        seen = set()
-        last = start
-        for page in range(1, INDEX_PAGES + 1):
+    def discover(self, address, start, end, state=None, save=None):
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != 1
+            or state.get("address") != address
+            or state.get("start_block") != start
+            or state.get("end_block") != end
+        ):
+            state = {
+                "schema_version": 1,
+                "provider": "etherscan_v2_txlist",
+                "address": address,
+                "start_block": start,
+                "end_block": end,
+                "next_page": 1,
+                "rows": [],
+                "gaps": [],
+                "done": False,
+            }
+        rows = state["rows"]
+        gaps = state["gaps"]
+        seen = {row[0] for row in rows if isinstance(row, list) and len(row) == 3}
+        last = max((row[1] for row in rows if isinstance(row, list) and len(row) == 3), default=start)
+        try:
+            cap = int(os.environ.get("CHAININQUEST_INDEX_MAX_PAGES", INDEX_PAGES))
+        except ValueError:
+            cap = INDEX_PAGES
+        cap = min(max(cap, 1), 200)
+        page = state.get("next_page", 1)
+        while page <= cap:
+            if self.client is not None and self.client.remaining() <= 1:
+                gaps.append({"reason": "index_deadline", "page": page})
+                break
             try:
                 items = self.page(address, start, end, page)
                 for item in items:
@@ -232,23 +327,37 @@ class EtherscanAdapter:
                         raise QueryError("Index order, range or pagination conflict", "index_row")
                     last = block
                     seen.add(h)
-                    patterns = {
-                        "from": ADDRESS,
-                        "to": re.compile(r"(?:0x[0-9a-fA-F]{40})?"),
-                        "value": re.compile(r"[0-9]{1,78}"),
-                        "blockHash": HASH,
-                        "timeStamp": re.compile(r"[0-9]{1,20}"),
-                        "txreceipt_status": re.compile(r"[01]"),
-                        "isError": re.compile(r"[01]"),
-                    }
                     claims = {
                         key: item[key]
-                        for key, pattern in patterns.items()
+                        for key, pattern in CLAIMS.items()
                         if isinstance(item.get(key), str) and pattern.fullmatch(item[key])
                     }
-                    rows.append((h, block, claims))
+                    rows.append([h, block, claims])
                 if len(items) < INDEX_PAGE:
-                    return rows, gaps
+                    state["done"] = True
+                    break
+                page += 1
+                state["next_page"] = page
+                if save:
+                    save(state)
             except QueryError as error:
-                return rows, [{"reason": error.category, "page": page}]
-        return rows, [{"reason": "index_page_budget", "page": INDEX_PAGES + 1}]
+                gaps.append({"reason": error.category, "page": page})
+                break
+        if page > cap and not state["done"]:
+            gaps.append({"reason": "index_page_budget", "page": page})
+        self.coverage = {
+            "provider": "etherscan_v2_txlist",
+            "basis": "pagination_without_provider_watermark",
+            "attested": False,
+            "pagination": {
+                "page_size": INDEX_PAGE,
+                "pages": page - 1,
+                "rows": len(rows),
+                "terminal": state["done"],
+            },
+            "coverage_scope": "Provider txlist; no indexed-through height attestation",
+            "gaps": gaps,
+        }
+        if save:
+            save(state)
+        return [(row[0], row[1], row[2]) for row in rows], gaps

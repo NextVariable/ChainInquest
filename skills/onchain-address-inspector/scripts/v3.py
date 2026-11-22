@@ -138,17 +138,33 @@ def conclusions(chains, issues):
         report = result["report"]
         metrics = report["deterministic_metrics"]
         if metrics and result.get("analysis") is not None:
-            facts.append(
-                {
-                    "chain_id": chain_id,
-                    "scope": "observed_evidence",
-                    "transactions": metrics["transactions"],
-                    "events": metrics["events"],
-                    "proof": report["calculation"]["transaction_refs"]
-                    + report["calculation"]["event_refs"],
-                    "coverage_complete": result["coverage"]["complete"],
-                }
+            complete = result["coverage"]["complete"]
+            observed_zero = not (
+                report["calculation"]["transaction_refs"]
+                or report["calculation"]["event_refs"]
             )
+            if observed_zero and not complete:
+                unknown.append(
+                    {
+                        "chain_id": chain_id,
+                        "scope": "activity_counts",
+                        "reason": "coverage_incomplete_counts_withheld",
+                        "coverage_status": result["coverage"].get("status", "unknown"),
+                    }
+                )
+            else:
+                facts.append(
+                    {
+                        "chain_id": chain_id,
+                        "scope": "observed_evidence",
+                        "transactions": metrics["transactions"],
+                        "events": metrics["events"],
+                        "proof": report["calculation"]["transaction_refs"]
+                        + report["calculation"]["event_refs"],
+                        "coverage_complete": complete,
+                        "counts_are_observed_sample": not complete,
+                    }
+                )
         if result.get("analysis"):
             inferences.extend(
                 {"chain_id": chain_id, **item}
@@ -189,8 +205,9 @@ def query_contract(entry, bounds, seconds):
     args.concurrency = 2
     args.timeout = min(8, seconds)
     args.total_timeout = seconds
+    args.history_state_path = bounds.get("_history_path")
     for key, value in bounds.items():
-        if key != "pinned_hash":
+        if key not in {"pinned_hash", "_history_path"}:
             setattr(args, key, value)
     validate(args)
     report = investigate(args)
@@ -274,7 +291,9 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                     seconds = max(2, left // (len(pending) - offset))
                     checkpoint(directory, state, "collecting", current=key)
                     try:
-                        report = query_fn(entry, pinned[chain_key], seconds)
+                        bounds = dict(pinned[chain_key])
+                        bounds["_history_path"] = str(directory / (key + ".history.json"))
+                        report = query_fn(entry, bounds, seconds)
                         write(directory / (key + ".json"), report, 16 * 1024 * 1024)
                         if report["coverage"]["complete"]:
                             done.add(key)

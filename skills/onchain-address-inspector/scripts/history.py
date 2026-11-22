@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import os
 import re
 import subprocess
 import threading
@@ -17,6 +18,14 @@ from project import load_json, parse_time, source_url
 
 MAX_RESPONSE = 8 * 1024 * 1024
 BLOCKSCOUT = {1: "eth.blockscout.com"}
+ROUTESCAN = {1: "mainnet"}
+ROUTESCAN_HOST = "api.routescan.io"
+ROUTESCAN_PAGE = 1000
+ROUTESCAN_WINDOW = 10_000
+INDEX_PAGE_BUDGET = 60
+MAX_INDEX_LOGS = 2000
+TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 _CACHE = OrderedDict()
 _LOCK = threading.Lock()
 _NEXT_REQUEST = 0.0
@@ -157,7 +166,7 @@ class BlockscoutIndex:
     def read(self, path):
         return self.fetch(self.host, "/api/v2" + path, self.client)
 
-    def discover(self, address, start, end):
+    def discover(self, address, start, end, state=None, save=None):
         rows, gaps, seen, cursors = [], [], set(), set()
         try:
             status = self.read("/main-page/indexing-status")
@@ -259,7 +268,7 @@ class SnapshotIndex:
         self.coverage = {"basis": "operator_attestation", "attested": False}
         self.logs = None
 
-    def discover(self, address, start, end):
+    def discover(self, address, start, end, state=None, save=None):
         self.coverage = {"basis": "operator_attestation", "attested": False}
         self.logs = None
         try:
@@ -330,3 +339,453 @@ class SnapshotIndex:
         except (KeyError, ValueError, TypeError, OSError, AttributeError, RecursionError):
             reason = "index_invalid_snapshot"
         return [], [{"reason": reason, "from": start, "to": end}]
+
+
+def _index_state(name, chain_id, address, start, end):
+    return {
+        "schema_version": 1,
+        "provider": name,
+        "chain_id": chain_id,
+        "address": address,
+        "start_block": start,
+        "end_block": end,
+        "queue": [[start, end]],
+        "current_page": 1,
+        "rows": [],
+        "gaps": [],
+        "requests": 0,
+        "done": False,
+        "watermark": None,
+    }
+
+
+def _resume_state(state, name, chain_id, address, start, end):
+    fresh = _index_state(name, chain_id, address, start, end)
+    valid = (
+        isinstance(state, dict)
+        and state.get("schema_version") == 1
+        and state.get("provider") == name
+        and state.get("chain_id") == chain_id
+        and state.get("address") == address
+        and state.get("start_block") == start
+        and state.get("end_block") == end
+        and isinstance(state.get("queue"), list)
+        and isinstance(state.get("rows"), list)
+        and isinstance(state.get("gaps"), list)
+    )
+    if valid:
+        return state
+    if isinstance(state, dict):
+        state.clear()
+        state.update(fresh)
+        return state
+    return fresh
+
+
+class RoutescanIndex:
+    """Credential-free Etherscan-compatible history on Routescan.
+
+    Coverage is attested only when the provider reports the exact end block
+    (timestamp reconciled with RPC) and every block range is fully paged.
+    That is a provider watermark, not cryptographic proof of absence.
+    """
+
+    name = "routescan_etherscan_compatible"
+    logs = None
+
+    def __init__(self, chain_id, client, rpc, fetch=get_json):
+        if chain_id not in ROUTESCAN:
+            raise QueryError("Routescan history is not available for this network", "index_not_supported")
+        self.chain_id, self.client, self.rpc, self.fetch = chain_id, client, rpc, fetch
+        self.coverage = {"basis": "unverified", "attested": False, "gaps": []}
+        self.log_coverage = {"basis": "unverified", "attested": False, "gaps": []}
+
+    def read(self, **params):
+        query = urlencode([(key, str(value)) for key, value in params.items() if value is not None])
+        return self.fetch(
+            ROUTESCAN_HOST,
+            f"/v2/network/{ROUTESCAN[self.chain_id]}/evm/{self.chain_id}/etherscan/api?{query}",
+            self.client,
+            attempts=3,
+        )
+
+    @staticmethod
+    def result(payload, empty):
+        message = str(payload.get("message") or "")
+        result = payload.get("result")
+        if payload.get("status") == "1" and isinstance(result, list):
+            return result
+        if isinstance(result, list) and not result:
+            return []
+        low = message.lower()
+        if any(text in low for text in ("no transactions found", "no logs found", "no records found")):
+            return []
+        if "not supported" in low:
+            raise QueryError("History index does not serve this network", "index_not_supported")
+        if "result window is too large" in low:
+            raise QueryError("Index pagination window exceeded", "index_page_window")
+        if "rate limit" in low or "too many requests" in low:
+            raise QueryError("History index rate limit", "index_rate_limited")
+        raise QueryError(f"{empty} index response rejected", "index_response")
+
+    def watermark(self, end, state):
+        cached = state.get("watermark")
+        if isinstance(cached, dict) and cached.get("block") == end:
+            return cached
+        _, _, seconds = self.rpc.header(end)
+        payload = self.read(module="block", action="getblockreward", blockno=end)
+        row = payload.get("result")
+        if payload.get("status") != "1" or not isinstance(row, dict):
+            raise QueryError("Index cannot attest the range end", "index_head_unverified")
+        try:
+            block = int(row["blockNumber"])
+            stamp = int(row["timeStamp"])
+        except (KeyError, TypeError, ValueError):
+            raise QueryError("Malformed index block watermark", "index_response") from None
+        if block != end or stamp != seconds:
+            raise QueryError("Index block watermark differs from RPC", "index_watermark_mismatch")
+        state["watermark"] = {"block": block, "timestamp": stamp, "verified": True}
+        return state["watermark"]
+
+    def discover(self, address, start, end, state=None, save=None):
+        state = _resume_state(state, self.name, self.chain_id, address, start, end)
+        rows, gaps = state["rows"], state["gaps"]
+        seen = {row[0] for row in rows if isinstance(row, list) and len(row) == 3}
+        try:
+            cap = int(os.environ.get("CHAININQUEST_INDEX_MAX_PAGES", INDEX_PAGE_BUDGET))
+        except ValueError:
+            cap = INDEX_PAGE_BUDGET
+        cap = min(max(cap, 1), 200)
+        transient = []
+        try:
+            self.watermark(end, state)
+        except QueryError as error:
+            transient.append({"reason": error.category, "from": start, "to": end})
+        while state["queue"] and state["requests"] < cap:
+            if self.client.remaining() <= 1:
+                transient.append({"from": start, "to": end, "reason": "index_deadline"})
+                break
+            first, last = state["queue"][0]
+            page = state.get("current_page", 1)
+            state["requests"] += 1
+            try:
+                items = self.result(
+                    self.read(
+                        module="account",
+                        action="txlist",
+                        address=address,
+                        startblock=first,
+                        endblock=last,
+                        page=page,
+                        offset=ROUTESCAN_PAGE,
+                        sort="asc",
+                    ),
+                    "Transaction",
+                )
+            except QueryError as error:
+                if error.category == "index_page_window" and last > first:
+                    middle = (first + last) // 2
+                    state["queue"][:1] = [[first, middle], [middle + 1, last]]
+                    state["current_page"] = 1
+                elif error.category in {"index_deadline", "index_rate_limited"}:
+                    transient.append({"reason": error.category, "from": first, "to": last})
+                    break
+                else:
+                    gaps.append({"reason": error.category, "from": first, "to": last})
+                    state["queue"].pop(0)
+                    state["current_page"] = 1
+                if save:
+                    save(state)
+                continue
+            for item in items:
+                try:
+                    hash_, block, claims = self.row(item, address, first, last)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    gaps.append({"reason": "index_row", "from": first, "to": last})
+                    continue
+                if hash_ in seen:
+                    continue
+                seen.add(hash_)
+                rows.append([hash_, block, claims])
+            if len(items) < ROUTESCAN_PAGE:
+                state["queue"].pop(0)
+                state["current_page"] = 1
+            elif page >= ROUTESCAN_WINDOW // ROUTESCAN_PAGE:
+                if last > first:
+                    middle = (first + last) // 2
+                    state["queue"][:1] = [[first, middle], [middle + 1, last]]
+                    state["current_page"] = 1
+                else:
+                    gaps.append({"reason": "index_page_window", "from": first, "to": last})
+                    state["queue"].pop(0)
+                    state["current_page"] = 1
+            else:
+                state["current_page"] = page + 1
+            if save:
+                save(state)
+        if state["queue"] and state["requests"] >= cap:
+            transient.append({"from": start, "to": end, "reason": "index_page_budget"})
+        state["done"] = not state["queue"]
+        if save:
+            save(state)
+        gaps_all = gaps + transient
+        attested = bool(state.get("watermark")) and state["done"] and not gaps_all
+        self.coverage = {
+            "provider": self.name,
+            "endpoint": "api.routescan.io (credential-free Etherscan-compatible API)",
+            "basis": (
+                "provider_block_watermark_and_pagination_exhausted"
+                if attested
+                else "partial_pagination_or_watermark"
+            ),
+            "attested": attested,
+            "watermark": state.get("watermark"),
+            "pagination": {
+                "page_size": ROUTESCAN_PAGE,
+                "requests": state["requests"],
+                "rows": len(rows),
+                "terminal": state["done"],
+                "pending_ranges": len(state["queue"]),
+                "provider_window": ROUTESCAN_WINDOW,
+            },
+            "coverage_scope": (
+                "Provider txlist over the exact block range; every candidate is reconciled "
+                "against RPC before it contributes to metrics"
+            ),
+            "gaps": gaps_all,
+        }
+        return [(row[0], row[1], row[2]) for row in rows], gaps_all
+
+    @staticmethod
+    def row(item, address, first, last):
+        if not isinstance(item, dict):
+            raise TypeError
+        hash_, block, block_hash = item["hash"], item["blockNumber"], item["blockHash"]
+        if not valid(HASH, hash_) or not valid(HASH, block_hash):
+            raise ValueError
+        block = int(block)
+        if not first <= block <= last:
+            raise ValueError
+        sender, to = item["from"], item.get("to") or ""
+        if not valid(ADDRESS, sender) or not valid(CLAIMS["to"], to):
+            raise ValueError
+        if address not in {sender.lower(), to.lower()}:
+            raise ValueError
+        claims = {key: item[key] for key, pattern in CLAIMS.items() if valid(pattern, item.get(key))}
+        claims.update({"from": sender.lower(), "to": to.lower()})
+        return hash_.lower(), block, claims
+
+    def logs_queries(self, address, state):
+        participant = "0x" + "0" * 24 + address[2:]
+        wanted = [
+            ("emitter", {"address": address}, 2),
+            ("transfer_in", {"topic0": TRANSFER, "topic1": participant}, 0),
+            ("approval_in", {"topic0": APPROVAL, "topic1": participant}, 0),
+            ("transfer_out", {"topic0": TRANSFER, "topic2": participant}, 1),
+            ("approval_out", {"topic0": APPROVAL, "topic2": participant}, 1),
+        ]
+        if not isinstance(state.get("queries"), list) or len(state["queries"]) != len(wanted):
+            state["queries"] = [
+                {"key": key, "params": params, "filter": index, "next_page": 1, "done": False}
+                for key, params, index in wanted
+            ]
+        return state["queries"]
+
+    def discover_logs(self, address, first, last, state=None, save=None):
+        state = _resume_state(
+            state, self.name + ":logs", self.chain_id, address, first, last
+        )
+        rows, gaps = state["rows"], state["gaps"]
+        seen = {
+            (row[0].get("transactionHash"), row[0].get("logIndex"))
+            for row in rows
+            if isinstance(row, list) and row and isinstance(row[0], dict)
+        }
+        queries = self.logs_queries(address, state)
+        transient = []
+        try:
+            self.watermark(last, state)
+        except QueryError as error:
+            transient.append({"reason": error.category, "from": first, "to": last})
+        for query in queries:
+            while not query["done"]:
+                if len(rows) >= MAX_INDEX_LOGS:
+                    query["done"] = True
+                    transient.append(
+                        {
+                            "reason": "log_budget",
+                            "from": first,
+                            "to": last,
+                            "filter": query["filter"],
+                        }
+                    )
+                    break
+                if self.client.remaining() <= 1:
+                    transient.append({"reason": "index_deadline", "from": first, "to": last})
+                    break
+                try:
+                    items = self.result(
+                        self.read(
+                            module="logs",
+                            action="getLogs",
+                            fromBlock=first,
+                            toBlock=last,
+                            page=query["next_page"],
+                            offset=ROUTESCAN_PAGE,
+                            sort="asc",
+                            **query["params"],
+                        ),
+                        "Log",
+                    )
+                except QueryError as error:
+                    if error.category in {"index_deadline", "index_rate_limited"}:
+                        transient.append(
+                            {
+                                "reason": error.category,
+                                "from": first,
+                                "to": last,
+                                "filter": query["filter"],
+                            }
+                        )
+                    else:
+                        gaps.append(
+                            {
+                                "reason": error.category,
+                                "from": first,
+                                "to": last,
+                                "filter": query["filter"],
+                            }
+                        )
+                        query["done"] = True
+                    break
+                for item in items:
+                    try:
+                        raw = self.log_row(item, address, query["filter"])
+                    except (ValueError, TypeError, KeyError, AttributeError, QueryError):
+                        gaps.append(
+                            {
+                                "reason": "index_log_row",
+                                "from": first,
+                                "to": last,
+                                "filter": query["filter"],
+                            }
+                        )
+                        continue
+                    key = raw["transactionHash"], raw["logIndex"]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append([raw, query["filter"]])
+                if len(items) < ROUTESCAN_PAGE:
+                    query["done"] = True
+                elif query["next_page"] >= ROUTESCAN_WINDOW // ROUTESCAN_PAGE:
+                    query["done"] = True
+                    gaps.append(
+                        {
+                            "reason": "index_log_page_window",
+                            "from": first,
+                            "to": last,
+                            "filter": query["filter"],
+                        }
+                    )
+                else:
+                    query["next_page"] += 1
+                if save:
+                    save(state)
+        done = all(query["done"] for query in queries)
+        gaps_all = gaps + transient
+        attested = bool(state.get("watermark")) and done and not gaps_all
+        self.log_coverage = {
+            "provider": self.name,
+            "basis": (
+                "provider_block_watermark_and_pagination_exhausted"
+                if attested
+                else "partial_index_log_scope"
+            ),
+            "attested": attested,
+            "watermark": state.get("watermark"),
+            "queries": {query["key"]: query["done"] for query in queries},
+            "rows": len(rows),
+            "gaps": gaps_all,
+            "coverage_scope": (
+                "Emitter logs plus Transfer/Approval participation, reconciled against RPC receipts"
+            ),
+        }
+        if save:
+            save(state)
+        return [(row[0], first, last, row[1]) for row in rows], gaps_all
+
+    def log_row(self, item, address, filter_index):
+        if not isinstance(item, dict):
+            raise TypeError
+        if not variants(item.get("logIndex")) or not variants(item.get("transactionIndex")):
+            item = self.repair_log(item, address)
+        raw = {
+            "address": item["address"],
+            "topics": item["topics"],
+            "data": item["data"],
+            "blockNumber": item["blockNumber"],
+            "blockHash": item["blockHash"],
+            "transactionHash": item["transactionHash"],
+            "transactionIndex": item["transactionIndex"],
+            "logIndex": item["logIndex"],
+            "removed": False,
+        }
+        if (
+            not valid(ADDRESS, raw["address"])
+            or not valid(HASH, raw["blockHash"])
+            or not valid(HASH, raw["transactionHash"])
+            or not isinstance(raw["topics"], list)
+            or len(raw["topics"]) > 4
+            or not all(valid(HASH, topic) for topic in raw["topics"])
+            or not variants(raw["logIndex"])
+            or not variants(raw["transactionIndex"])
+            or not variants(raw["blockNumber"])
+        ):
+            raise ValueError
+        if filter_index == 2 and raw["address"].lower() != address:
+            raise ValueError
+        return raw
+
+    def repair_log(self, item, address):
+        receipt = self.rpc.call("eth_getTransactionReceipt", [item.get("transactionHash")])
+        logs = receipt.get("logs") if isinstance(receipt, dict) else None
+        if not isinstance(logs, list):
+            raise ValueError
+        matches = [
+            row
+            for row in logs
+            if isinstance(row, dict)
+            and row.get("address", "").lower() == str(item.get("address", "")).lower()
+            and row.get("topics") == item.get("topics")
+            and row.get("data") == item.get("data")
+            and row.get("blockHash") == item.get("blockHash")
+        ]
+        if len(matches) != 1:
+            raise ValueError
+        return {
+            **item,
+            "logIndex": matches[0].get("logIndex"),
+            "transactionIndex": matches[0].get("transactionIndex"),
+            "blockNumber": matches[0].get("blockNumber"),
+        }
+
+
+def variants(value):
+    return isinstance(value, str) and re.fullmatch(r"(?:0x)?[0-9a-fA-F]{1,16}", value) is not None
+
+
+def provider_for(chain_id, raw_client, rpc, key):
+    """Select the strongest available history provider for the network."""
+    snapshot_root = os.environ.get("CHAININQUEST_HISTORY_DIR")
+    if snapshot_root:
+        return SnapshotIndex(snapshot_root, chain_id, rpc)
+    if chain_id in ROUTESCAN:
+        return RoutescanIndex(chain_id, raw_client, rpc)
+    if key:
+        from adapters import EtherscanAdapter
+
+        return EtherscanAdapter(key, raw_client, chain_id)
+    if chain_id in BLOCKSCOUT:
+        return BlockscoutIndex(chain_id, raw_client, rpc)
+    return None

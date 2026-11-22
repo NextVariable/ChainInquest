@@ -1,11 +1,13 @@
 """Opt-in investigation orchestration, separate from the legacy JSON schema."""
 
 import datetime as dt
+import json
 import os
 import time
 from copy import copy
+from pathlib import Path
 
-from adapters import ADDRESS, HASH, EtherscanAdapter, RpcAdapter
+from adapters import ADDRESS, HASH, RpcAdapter
 from analytics import analyze
 from chains import CHAINS
 from event_decoder import (
@@ -37,6 +39,63 @@ UTC = dt.timezone.utc
 
 def timestamp(value):
     return dt.datetime.fromtimestamp(value, UTC).isoformat()
+
+
+def history_saver(path):
+    """Load and atomically persist per-address history progress."""
+    if not path:
+        return None, None
+    document = None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            candidate = json.load(handle)
+        if isinstance(candidate, dict):
+            document = candidate
+    except (OSError, ValueError, RecursionError):
+        document = None
+    failed = False
+
+    def save(value):
+        nonlocal failed
+        if failed:
+            return
+        try:
+            body = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+            if len(body) > 16 * 1024 * 1024:
+                raise ValueError
+            target = Path(path)
+            temporary = target.with_suffix(target.suffix + ".tmp")
+            temporary.write_text(body, encoding="utf-8")
+            os.replace(temporary, target)
+        except (OSError, ValueError, RecursionError):
+            failed = True
+
+    return document, save
+
+
+def stream_status(part):
+    if part.get("complete"):
+        return "complete"
+    gaps = part.get("gaps") or []
+    if part.get("method") in {None, "none_configured"}:
+        return "unknown"
+    if part.get("observed") or part.get("status") == "partial":
+        return "partial"
+    return "failed" if gaps else "unknown"
+
+
+def finalize_coverage(coverage):
+    for name in ("transactions", "events", "receipts"):
+        coverage[name]["status"] = stream_status(coverage[name])
+    states = {coverage[name]["status"] for name in ("transactions", "events", "receipts")}
+    if coverage["complete"]:
+        coverage["status"] = "complete"
+    elif states <= {"failed"}:
+        coverage["status"] = "failed"
+    elif "partial" in states or "complete" in states:
+        coverage["status"] = "partial"
+    else:
+        coverage["status"] = "unknown"
 
 
 def time_window(args, now):
@@ -117,14 +176,16 @@ def legacy_transactions(args, rpc, start, end):
     }
 
 
-def indexed_transactions(rpc, index, address, start, end):
+def indexed_transactions(rpc, index, address, start, end, state=None, save=None):
     if index is None:
         return [], {
-            "method": "etherscan_v2_txlist",
+            "method": "none_configured",
+            "status": "unknown",
             "complete": False,
+            "observed": False,
             "gaps": [{"reason": "index_key_required", "from": start, "to": end}],
         }
-    candidates, gaps = index.discover(address, start, end)
+    candidates, gaps = index.discover(address, start, end, state=state, save=save)
     attestation = getattr(index, "coverage", {})
     attested = attestation.get("attested") is True
     txs = []
@@ -135,11 +196,12 @@ def indexed_transactions(rpc, index, address, start, end):
             txs.append(tx)
         except QueryError as error:
             gaps.append({"hash": h, "block": n, "reason": error.category})
-    # V2 does not attest an indexed-through height for txlist. Report pagination
-    # completion independently and never infer that an empty page means no activity.
+    # Never infer that an empty page means no activity. Zero is observable only
+    # when the provider watermark and pagination are both attested.
     return txs, {
         "method": getattr(index, "name", "etherscan_v2_txlist"),
         "complete": attested and not gaps,
+        "observed": attested or bool(txs),
         "index_coverage": attestation,
         "pagination_and_corroboration_complete": not gaps,
         "gaps": gaps
@@ -170,9 +232,13 @@ def compare_index_claims(tx, coverage):
     missing = [
         key for key in ("from", "to", "value", "blockHash", "timeStamp") if key not in claims
     ]
-    if not ({"txreceipt_status", "isError"} & claims.keys()) or tx["status"] == "unknown":
-        missing.append("receipt_status")
-    comparison.update({"mismatches": mismatches, "unverified_fields": missing})
+    comparison.update(
+        {
+            "mismatches": mismatches,
+            "unverified_fields": missing,
+            "receipt_status_claimed": bool({"txreceipt_status", "isError"} & claims.keys()),
+        }
+    )
     # Only the RPC-derived record contributes to sample metrics.
     if mismatches or missing:
         coverage["pagination_and_corroboration_complete"] = False
@@ -217,7 +283,18 @@ def token_metadata(rpc, token, block):
     return int(raw, 16)
 
 
-def get_events(rpc, cache, address, first, last, abi, window, history=None):
+def get_events(
+    rpc,
+    cache,
+    address,
+    first,
+    last,
+    abi,
+    window,
+    history=None,
+    log_state=None,
+    save_logs=None,
+):
     participant = "0x" + "0" * 24 + address[2:]
     filters = [
         {"topics": [list(TOPICS), participant]},
@@ -225,11 +302,17 @@ def get_events(rpc, cache, address, first, last, abi, window, history=None):
         {"address": address},
     ]
     supplied = getattr(history, "logs", None)
-    if supplied is None:
-        rows, gaps = rpc.logs(first, last, filters)
-    else:
+    index_logs = getattr(history, "log_coverage", None) if history is not None else None
+    if supplied is not None:
         rows, gaps = [(row, first, last, 3) for row in supplied], []
         filters.append({"operator_scope": "emitter_or_erc20_participant_v1"})
+    elif history is not None and hasattr(history, "discover_logs"):
+        rows, gaps = history.discover_logs(
+            address, first, last, state=log_state, save=save_logs
+        )
+        index_logs = history.log_coverage
+    else:
+        rows, gaps = rpc.logs(first, last, filters, state=log_state, save=save_logs)
     accepted, rejected, conflicts = {}, [], set()
     decimals = {}
     for raw, a, b, i in rows:
@@ -325,24 +408,44 @@ def get_events(rpc, cache, address, first, last, abi, window, history=None):
             except (ValueError, TypeError, KeyError, AttributeError, RuntimeError, RecursionError):
                 entry["issues"].append("abi_decode_failed")
         events.append(entry)
+    if supplied is not None:
+        method = "operator_snapshot_and_rpc_receipts"
+        basis = "operator-attested log scope, included logs reconciled against RPC"
+        complete = not gaps
+        attested = True
+    elif history is not None and hasattr(history, "discover_logs"):
+        method = "index_logs_and_rpc_receipts"
+        basis = "provider log pagination plus RPC receipt reconciliation"
+        attested = bool((index_logs or {}).get("attested"))
+        complete = attested and not gaps
+    else:
+        method = "rpc_getLogs_and_receipts"
+        basis = "RPC responses, no independent omission proof"
+        attested = False
+        complete = not gaps
+    observed = bool(events) or complete or (attested and not gaps)
     return (
         events,
         rejected,
         {
-            "method": "rpc_getLogs_and_receipts"
-            if supplied is None
-            else "operator_snapshot_and_rpc_receipts",
-            "complete": not gaps,
+            "method": method,
+            "status": "complete"
+            if complete
+            else "partial"
+            if (events or rows)
+            else "failed"
+            if gaps
+            else "unknown",
+            "complete": complete,
+            "observed": observed,
+            "attested": attested,
             "filters": filters,
             "gaps": gaps,
             "rpc_attempt_failures": rpc.log_failures,
             "rpc_answered_ranges": rpc.log_answered_ranges,
             "initial_log_span": rpc.log_span,
-            "completeness_basis": (
-                "RPC responses, no independent omission proof"
-                if supplied is None
-                else "operator-attested log scope, included logs reconciled against RPC"
-            ),
+            "index_log_coverage": index_logs,
+            "completeness_basis": basis,
         },
     )
 
@@ -373,6 +476,21 @@ def investigate(args, client=None, index=None, now=None):
     chain_id = getattr(args, "chain_id", CHAIN_ID)
     chain = CHAINS[chain_id]
     address = args.address.lower() if ADDRESS.fullmatch(args.address) else None
+    history, persist = history_saver(getattr(args, "history_state_path", None))
+    if not isinstance(history, dict):
+        history = {}
+    history.update({"schema_version": 1, "chain_id": chain_id, "address": address})
+
+    def save_transactions(state):
+        history["transactions"] = state
+        if persist:
+            persist(history)
+
+    def save_logs(state):
+        history["logs_index"] = state
+        if persist:
+            persist(history)
+
     coverage = {
         name: {"complete": False, "gaps": []} for name in ("transactions", "events", "receipts")
     }
@@ -435,6 +553,9 @@ def investigate(args, client=None, index=None, now=None):
         progress.update("range_resolution")
         if window:
             a, b = window
+            if args.to_time is None and b > tip_seconds + 1:
+                b = tip_seconds + 1
+                window = (a, b)
             first, last = rpc.lower_bound(a, tip), rpc.lower_bound(b, tip) - 1
             genesis_time = rpc.header(0)[2] if first == 0 else a
             if a < genesis_time:
@@ -495,20 +616,19 @@ def investigate(args, client=None, index=None, now=None):
                     txs, coverage["transactions"] = legacy_transactions(args, rpc, first, last)
                 else:
                     key = os.environ.get("ETHERSCAN_API_KEY")
-                    if getattr(args, "verify_contract", False) and index is None:
-                        from history import BLOCKSCOUT, BlockscoutIndex, SnapshotIndex
+                    if index is None:
+                        from history import provider_for
 
-                        snapshot_root = os.environ.get("CHAININQUEST_HISTORY_DIR")
-                        if snapshot_root:
-                            index = SnapshotIndex(snapshot_root, chain_id, rpc)
-                        elif not key and chain_id in BLOCKSCOUT:
-                            index = BlockscoutIndex(chain_id, raw_client, rpc)
-                    index = index or (EtherscanAdapter(key, raw_client, chain_id) if key else None)
-                    source["transaction_index"] = getattr(
-                        index, "name", "Etherscan V2, normal txlist"
-                    )
+                        index = provider_for(chain_id, raw_client, rpc, key)
+                    source["transaction_index"] = getattr(index, "name", "none_configured")
                     txs, coverage["transactions"] = indexed_transactions(
-                        rpc, index, address, first, last
+                        rpc,
+                        index,
+                        address,
+                        first,
+                        last,
+                        state=history.get("transactions"),
+                        save=save_transactions,
                     )
                 if window and any(
                     not window[0]
@@ -539,10 +659,19 @@ def investigate(args, client=None, index=None, now=None):
                             tx["receipt_error"] = failures[tx["hash"]]
                 progress.update("events")
                 events, rejected, coverage["events"] = get_events(
-                    rpc, cache, address, first, last, abi, window, index
+                    rpc,
+                    cache,
+                    address,
+                    first,
+                    last,
+                    abi,
+                    window,
+                    index,
+                    log_state=history.get("logs_index"),
+                    save_logs=save_logs,
                 )
-                if getattr(index, "logs", None) is not None:
-                    source["event_index"] = index.name
+                if coverage["events"]["method"].startswith(("index_logs", "operator_snapshot")):
+                    source["event_index"] = getattr(index, "name", "operator_history_snapshot")
                 classify_interactions(rpc, txs)
             progress.update("snapshot")
             stable = rpc.header(last, fresh=True) == anchor and (
@@ -559,9 +688,12 @@ def investigate(args, client=None, index=None, now=None):
             coverage[name]["complete"] &= not time_gaps
         unknown = [tx["hash"] for tx in txs if tx["status"] == "unknown"]
         coverage["receipts"] = {
+            "method": "rpc_receipts" if txs else "not_needed",
             "complete": coverage["transactions"]["complete"] and not unknown,
+            "observed": coverage["transactions"].get("observed", bool(txs)),
             "unknown_transaction_hashes": unknown,
-            "gaps": list(time_gaps),
+            "gaps": list(time_gaps)
+            + [{"reason": "receipt_unknown", "hash": h} for h in unknown],
         }
         if args.abi_file:
             coverage["abi"] = {
@@ -620,6 +752,7 @@ def investigate(args, client=None, index=None, now=None):
             native = analytics["transactions"]["native_value_successful_top_level_only"]
             for direction in ("in", "out"):
                 native[f"{direction}_native"] = native.pop(f"{direction}_mon")
+    finalize_coverage(coverage)
     evidence = cache.export(txs, events, rejected, stable)
     return {
         "schema_version": "2.0",
