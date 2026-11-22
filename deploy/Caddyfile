@@ -1,0 +1,29 @@
+# Replace {$BETA_DOMAIN} with the approved beta hostname before installing.
+# Caddy obtains and renews the certificate automatically. No certificate paths
+# or API tokens belong in this file.
+{$BETA_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 200KB
+	}
+
+	header {
+		-Server
+	}
+
+	# Only the loopback Python service is reachable; port 8000 is never exposed.
+	reverse_proxy 127.0.0.1:8000 {
+		header_up Host {host}
+		transport http {
+			read_timeout 30s
+			write_timeout 30s
+			dial_timeout 5s
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
