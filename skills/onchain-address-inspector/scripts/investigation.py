@@ -445,6 +445,22 @@ def investigate(args, client=None, index=None, now=None):
         if first <= last:
             anchor = rpc.header(last)
             resolved["end_block_hash"] = anchor[1]
+            if getattr(args, "verify_contract", False):
+                progress.update("contract_identity")
+                code = rpc.call("eth_getCode", [address, hex(last)])
+                if not isinstance(code, str) or not BYTES.fullmatch(code) or code == "0x":
+                    raise QueryError(
+                        "Contract bytecode unavailable at pinned snapshot",
+                        "contract_identity_unverified",
+                    )
+                from citations import digest
+
+                coverage["contract_identity"] = {
+                    "bytecode_present": True,
+                    "block": last,
+                    "block_hash": anchor[1],
+                    "bytecode_json_sha256": digest(code.lower()),
+                }
             with rpc.reserve_snapshot_budget():
                 progress.update("transactions")
                 if last - first + 1 <= MAX_BLOCKS:
@@ -538,6 +554,8 @@ def investigate(args, client=None, index=None, now=None):
             raw_client.close()
     if not stable:
         coverage["transactions"]["observed"] = False
+        if "contract_identity" in coverage:
+            coverage["contract_identity"]["bytecode_present"] = None
     analytics = analyze(
         address,
         txs if stable and coverage["transactions"].get("usable", True) else [],

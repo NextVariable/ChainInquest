@@ -1,0 +1,23 @@
+{
+  "goal": "overview",
+  "budget_seconds": 120,
+  "scope": {"recent_blocks": 4},
+  "manifest": {
+    "schema_version": "1",
+    "project": "Circle USDC and CCTP",
+    "deployments": [{
+      "id": "circle-monad-testnet",
+      "chain_id": 10143,
+      "contracts": [
+        {
+          "address": "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+          "attribution": {"status": "confirmed", "sources": ["https://developers.circle.com/stablecoins/usdc-contract-addresses"]}
+        },
+        {
+          "address": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+          "attribution": {"status": "confirmed", "sources": ["https://developers.circle.com/cctp/references/contract-addresses"]}
+        }
+      ]
+    }]
+  }
+}

@@ -49,7 +49,7 @@ def source_url(value):
     return value
 
 
-def contracts(manifest):
+def contracts(manifest, *, chain_id=CHAIN_ID, allow_unknown_deployment=False):
     if type(manifest["schema_version"]) is not str or manifest["schema_version"] != "1":
         raise ValueError("Unsupported project manifest")
     name = manifest["project"]
@@ -66,8 +66,8 @@ def contracts(manifest):
             raise ValueError("Invalid or repeated deployment id")
         deployment_ids.add(deployment)
         chain = dep["chain_id"]
-        if type(chain) is not int or chain != CHAIN_ID:
-            raise ValueError("Only Monad Testnet 10143 is supported")
+        if type(chain) is not int or chain != chain_id:
+            raise ValueError("Unexpected chain for aggregation")
         if not isinstance(dep["contracts"], list) or not dep["contracts"]:
             raise ValueError("Empty contract list")
         for entry in dep["contracts"]:
@@ -88,7 +88,10 @@ def contracts(manifest):
             if not isinstance(sources, list) or len(sources) > 16:
                 raise ValueError("Invalid attribution sources")
             sources = [source_url(url) for url in sources]
-            if status == "confirmed" and (not sources or block is None or deployed is None):
+            if status == "confirmed" and (
+                not sources
+                or ((block is None or deployed is None) and not allow_unknown_deployment)
+            ):
                 raise ValueError("Confirmed contract requires sources, deployment block and time")
             entries.append(
                 {
@@ -104,7 +107,7 @@ def contracts(manifest):
     return name, entries
 
 
-def report_inputs(result, address):
+def report_inputs(result, address, chain_id=CHAIN_ID):
     report = result["report"]
     source = report["data_sources"]
     evidence = report["on_chain_evidence"]
@@ -112,7 +115,7 @@ def report_inputs(result, address):
     if (
         result["schema_version"] != "2.0"
         or report["target"] != address
-        or source["chain_id"] != CHAIN_ID
+        or source["chain_id"] != chain_id
         or evidence["snapshot_checked"] is not True
         or not HASH.fullmatch(resolved["end_block_hash"])
     ):
@@ -158,9 +161,7 @@ def collect(report, contract, bounds):
                 raise ValueError("Evidence outside block bounds")
             if bounds[2] and not parse_time(bounds[2]) <= timestamp < parse_time(bounds[3]):
                 raise ValueError("Evidence outside time bounds")
-            if block < contract["deployment_block"] or timestamp < parse_time(
-                contract["deployed_at"]
-            ):
+            if not deployed(contract, block, timestamp):
                 continue
             if group == "transactions":
                 if address not in (row["from"], row["to"]) or row["status"] not in {
@@ -253,6 +254,12 @@ def merge(rows, key, raw_key, group, gaps):
     return list(accepted.values())
 
 
+def deployed(contract, block, timestamp):
+    return (contract["deployment_block"] is None or block >= contract["deployment_block"]) and (
+        contract["deployed_at"] is None or timestamp >= parse_time(contract["deployed_at"])
+    )
+
+
 def metrics(txs, events, included):
     counts = Counter(t["status"] for t in txs)
     assets = Counter()
@@ -262,9 +269,7 @@ def metrics(txs, events, included):
         if address not in included:
             return False
         entry = included[address]
-        return tx["block"] >= entry["deployment_block"] and parse_time(
-            tx["timestamp"]
-        ) >= parse_time(entry["deployed_at"])
+        return deployed(entry, tx["block"], parse_time(tx["timestamp"]))
 
     for tx in txs:
         sender, recipient = active(tx["from"], tx), active(tx["to"], tx)
@@ -287,7 +292,7 @@ def metrics(txs, events, included):
     }
 
 
-def investigate_project(manifest_path):
+def investigate_project(manifest_path, *, chain_id=CHAIN_ID, require_verified_code=False):
     base = Path(manifest_path).resolve()
     gaps, errors, summaries = [], [], []
     txs, events = [], []
@@ -296,7 +301,7 @@ def investigate_project(manifest_path):
     loaded_bytes = 0
     started = utc()
     provenance = {
-        "chain_id": CHAIN_ID,
+        "chain_id": chain_id,
         "method": "saved_address_reports",
         "query_started_at": started,
         "reports": {},
@@ -304,7 +309,9 @@ def investigate_project(manifest_path):
     try:
         manifest, raw_manifest = load_json(base, 256 * 1024)
         provenance["manifest_sha256"] = hashlib.sha256(raw_manifest).hexdigest()
-        name, entries = contracts(manifest)
+        name, entries = contracts(
+            manifest, chain_id=chain_id, allow_unknown_deployment=require_verified_code
+        )
         perimeter = {
             entry["address"]: entry
             for entry in entries
@@ -325,10 +332,19 @@ def investigate_project(manifest_path):
                     raise ValueError("Report path must stay under the manifest directory")
                 result, raw = load_json(path, min(MAX_REPORT_BYTES, MAX_INPUT_BYTES - loaded_bytes))
                 loaded_bytes += len(raw)
-                report, current = report_inputs(result, address)
+                report, current = report_inputs(result, address, chain_id)
                 if bounds is not None and bounds != current:
                     raise QueryError(
                         "Use identical resolved bounds and ending block hash", "incomparable_report"
+                    )
+                if (
+                    require_verified_code
+                    and report["coverage"].get("contract_identity", {}).get("bytecode_present")
+                    is not True
+                ):
+                    raise QueryError(
+                        "Contract bytecode unavailable at pinned snapshot",
+                        "contract_identity_unverified",
                     )
                 selected = collect(report, entry, current)
                 complete = result["coverage"]["complete"] is True
@@ -373,7 +389,7 @@ def investigate_project(manifest_path):
     txs.sort(key=lambda t: (t["block"], t["hash"]))
     events.sort(key=lambda e: (e["block"], e["log_index"]))
     evidence = {"transactions": txs, "events": events}
-    catalog = evidence_catalog(CHAIN_ID, evidence, provenance)
+    catalog = evidence_catalog(chain_id, evidence, provenance)
     for row in txs + events:
         catalog[row["evidence_ref"]]["sources"] = row["observed_for"]
     if not included:
@@ -389,7 +405,7 @@ def investigate_project(manifest_path):
             "deployments": [
                 {
                     "id": deployment,
-                    "chain_id": CHAIN_ID,
+                    "chain_id": chain_id,
                     "contracts": [c for c in summaries if c["deployment_id"] == deployment],
                 }
                 for deployment in sorted({c["deployment_id"] for c in summaries})
