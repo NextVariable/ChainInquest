@@ -146,6 +146,9 @@ Run a restore rehearsal into a disposable directory before inviting testers.
 Backups are not pruned automatically; remove old archives only after confirming
 the newest restore works.
 
+`backup.sh` exports `COPYFILE_DISABLE=1`. On macOS, bsdtar otherwise adds
+`._store` AppleDouble members and `restore.sh` correctly refuses the archive.
+
 ## Retention
 
 The timer runs a dry run only. Review its output, then apply deliberately:

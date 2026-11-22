@@ -7,6 +7,9 @@ STORE=${STORE:-/var/lib/chaininquest}
 DEST=${DEST:-/var/backups/chaininquest}
 SERVICE=${SERVICE:-chaininquest}
 umask 077
+# macOS bsdtar otherwise writes AppleDouble members such as ._store, which
+# deploy/verify_archive.py rejects as paths outside the store root.
+export COPYFILE_DISABLE=1
 
 [ -d "$STORE" ] || { echo "store not found: $STORE" >&2; exit 1; }
 mkdir -p "$DEST"
