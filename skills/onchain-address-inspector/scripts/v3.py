@@ -159,8 +159,7 @@ def conclusions(chains, issues):
         if metrics and result.get("analysis") is not None:
             complete = result["coverage"]["complete"]
             observed_zero = not (
-                report["calculation"]["transaction_refs"]
-                or report["calculation"]["event_refs"]
+                report["calculation"]["transaction_refs"] or report["calculation"]["event_refs"]
             )
             if observed_zero and not complete:
                 unknown.append(
@@ -342,8 +341,8 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                         if error.category in RETRYABLE:
                             retryable.append(entry)
                     checkpoint(directory, state, "address_checkpoint", completed=sorted(done))
-                supplement = (plan.get("plan") or {}).get("budget", {}).get(
-                    "supplement_attempts", 0
+                supplement = (
+                    (plan.get("plan") or {}).get("budget", {}).get("supplement_attempts", 0)
                 )
                 if (
                     retryable
@@ -371,9 +370,7 @@ def run(store, job_id, *, query_fn=query_contract, resolve_fn=resolve_recent):
                                 )
                             ]
                         else:
-                            issues.append(
-                                {"contract": key, "category": "partial_address_report"}
-                            )
+                            issues.append({"contract": key, "category": "partial_address_report"})
                     except QueryError as error:
                         issues.append({"contract": key, "category": error.category})
                     checkpoint(directory, state, "address_checkpoint", completed=sorted(done))

@@ -395,7 +395,9 @@ class RoutescanIndex:
 
     def __init__(self, chain_id, client, rpc, fetch=get_json):
         if chain_id not in ROUTESCAN:
-            raise QueryError("Routescan history is not available for this network", "index_not_supported")
+            raise QueryError(
+                "Routescan history is not available for this network", "index_not_supported"
+            )
         self.chain_id, self.client, self.rpc, self.fetch = chain_id, client, rpc, fetch
         self.coverage = {"basis": "unverified", "attested": False, "gaps": []}
         self.log_coverage = {"basis": "unverified", "attested": False, "gaps": []}
@@ -418,7 +420,9 @@ class RoutescanIndex:
         if isinstance(result, list) and not result:
             return []
         low = message.lower()
-        if any(text in low for text in ("no transactions found", "no logs found", "no records found")):
+        if any(
+            text in low for text in ("no transactions found", "no logs found", "no records found")
+        ):
             return []
         if "not supported" in low:
             raise QueryError("History index does not serve this network", "index_not_supported")
@@ -571,7 +575,9 @@ class RoutescanIndex:
             raise ValueError
         if address not in {sender.lower(), to.lower()}:
             raise ValueError
-        claims = {key: item[key] for key, pattern in CLAIMS.items() if valid(pattern, item.get(key))}
+        claims = {
+            key: item[key] for key, pattern in CLAIMS.items() if valid(pattern, item.get(key))
+        }
         claims.update({"from": sender.lower(), "to": to.lower()})
         return hash_.lower(), block, claims
 
@@ -592,9 +598,7 @@ class RoutescanIndex:
         return state["queries"]
 
     def discover_logs(self, address, first, last, state=None, save=None):
-        state = _resume_state(
-            state, self.name + ":logs", self.chain_id, address, first, last
-        )
+        state = _resume_state(state, self.name + ":logs", self.chain_id, address, first, last)
         rows, gaps = state["rows"], state["gaps"]
         seen = {
             (row[0].get("transactionHash"), row[0].get("logIndex"))

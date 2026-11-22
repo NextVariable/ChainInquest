@@ -118,15 +118,18 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(selection["focus"], ["coverage", "flows"])
         built = build(selection, 30)
         self.assertEqual(built["budget"]["window_days"], 30)
-        self.assertEqual([step["id"] for step in built["steps"]], [
-            "scope",
-            "identity",
-            "transactions",
-            "events",
-            "corroboration",
-            "analysis",
-            "report",
-        ])
+        self.assertEqual(
+            [step["id"] for step in built["steps"]],
+            [
+                "scope",
+                "identity",
+                "transactions",
+                "events",
+                "corroboration",
+                "analysis",
+                "report",
+            ],
+        )
         self.assertTrue(all(step["bounded"] for step in built["steps"]))
         self.assertIn("membership_from_manifest_only", built["constraints"])
         with patch.dict(os.environ, {"OPENAI_API_KEY": "", "CHAININQUEST_PLANNER_MODEL": ""}):
@@ -166,5 +169,7 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(state["status"], "partial")
             saved = store.result(job)
             self.assertFalse(saved["conclusions"]["interpretation"]["coverage_complete"])
-            self.assertIn("timeout", {gap["reason"] for gap in saved["conclusions"]["evidence_gaps"]})
+            self.assertIn(
+                "timeout", {gap["reason"] for gap in saved["conclusions"]["evidence_gaps"]}
+            )
             self.assertTrue(saved["conclusions"]["unknown"])

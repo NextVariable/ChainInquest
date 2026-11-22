@@ -18,7 +18,10 @@ def result(complete, transactions, gaps=None):
             "inferences": [],
             "unknown": [],
             "evidence_gaps": gaps or [],
-            "interpretation": {"note": "Missing data is not zero activity.", "coverage_complete": complete},
+            "interpretation": {
+                "note": "Missing data is not zero activity.",
+                "coverage_complete": complete,
+            },
         },
         "chains": {
             "1": {
@@ -41,7 +44,9 @@ def result(complete, transactions, gaps=None):
                 },
                 "analysis": {
                     "observed_counterparties": 0,
-                    "daily_utc": {"2026-01-01": {"transactions": None, "Transfer": None, "Approval": None}},
+                    "daily_utc": {
+                        "2026-01-01": {"transactions": None, "Transfer": None, "Approval": None}
+                    },
                     "graph": {"facts": [], "curator_attribution": []},
                 },
             }

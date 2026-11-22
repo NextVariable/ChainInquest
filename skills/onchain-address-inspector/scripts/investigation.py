@@ -307,9 +307,7 @@ def get_events(
         rows, gaps = [(row, first, last, 3) for row in supplied], []
         filters.append({"operator_scope": "emitter_or_erc20_participant_v1"})
     elif history is not None and hasattr(history, "discover_logs"):
-        rows, gaps = history.discover_logs(
-            address, first, last, state=log_state, save=save_logs
-        )
+        rows, gaps = history.discover_logs(address, first, last, state=log_state, save=save_logs)
         index_logs = history.log_coverage
     else:
         rows, gaps = rpc.logs(first, last, filters, state=log_state, save=save_logs)
@@ -692,8 +690,7 @@ def investigate(args, client=None, index=None, now=None):
             "complete": coverage["transactions"]["complete"] and not unknown,
             "observed": coverage["transactions"].get("observed", bool(txs)),
             "unknown_transaction_hashes": unknown,
-            "gaps": list(time_gaps)
-            + [{"reason": "receipt_unknown", "hash": h} for h in unknown],
+            "gaps": list(time_gaps) + [{"reason": "receipt_unknown", "hash": h} for h in unknown],
         }
         if args.abi_file:
             coverage["abi"] = {

@@ -88,7 +88,9 @@ def unknown_rows(unknown):
     for item in unknown:
         detail = item.get("reason") or item.get("category") or item.get("scope") or ""
         evidence = item.get("proof") or item.get("evidence_refs") or []
-        rows.append([item.get("chain_id", ""), detail, len(evidence), item.get("coverage_status", "")])
+        rows.append(
+            [item.get("chain_id", ""), detail, len(evidence), item.get("coverage_status", "")]
+        )
     return rows
 
 

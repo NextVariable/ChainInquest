@@ -240,9 +240,7 @@ class EtherscanAdapter:
                 response = connection.getresponse()
                 body = response.read(2**20 + 1)
                 if response.status != 200 or len(body) > 2**20:
-                    raise QueryError(
-                        f"Index HTTP failure {response.status}", "index_http_error"
-                    )
+                    raise QueryError(f"Index HTTP failure {response.status}", "index_http_error")
                 return json.loads(
                     body, object_pairs_hook=unique_object, parse_constant=invalid_constant
                 )
@@ -299,7 +297,9 @@ class EtherscanAdapter:
         rows = state["rows"]
         gaps = state["gaps"]
         seen = {row[0] for row in rows if isinstance(row, list) and len(row) == 3}
-        last = max((row[1] for row in rows if isinstance(row, list) and len(row) == 3), default=start)
+        last = max(
+            (row[1] for row in rows if isinstance(row, list) and len(row) == 3), default=start
+        )
         try:
             cap = int(os.environ.get("CHAININQUEST_INDEX_MAX_PAGES", INDEX_PAGES))
         except ValueError:

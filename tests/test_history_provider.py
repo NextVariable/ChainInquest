@@ -122,7 +122,9 @@ class RoutescanTests(unittest.TestCase):
         rows, gaps = index.discover(A, 1, 10_000, state={})
         self.assertEqual(gaps, [])
         self.assertTrue(index.coverage["attested"])
-        self.assertEqual({row[1] for row in rows}, {1, 6000} | {n for n in range(1, ROUTESCAN_PAGE + 1)})
+        self.assertEqual(
+            {row[1] for row in rows}, {1, 6000} | {n for n in range(1, ROUTESCAN_PAGE + 1)}
+        )
 
     def test_missing_watermark_never_yields_observed_zero(self):
         board = Board({(1, 10_000, 1): []})
@@ -206,16 +208,12 @@ class RoutescanTests(unittest.TestCase):
         rpc = RpcAdapter(client)
         rpc.log_span = 100
         saved = []
-        evidence, gaps = rpc.logs(
-            1, 200, [{"address": A}], state={}, save=saved.append
-        )
+        evidence, gaps = rpc.logs(1, 200, [{"address": A}], state={}, save=saved.append)
         self.assertEqual(evidence, [])
         self.assertEqual(gaps, [])
         self.assertEqual(len(saved[-1]["answered"]), 2)
         before = len(client.calls)
-        evidence, gaps = rpc.logs(
-            1, 200, [{"address": A}], state=saved[-1], save=saved.append
-        )
+        evidence, gaps = rpc.logs(1, 200, [{"address": A}], state=saved[-1], save=saved.append)
         self.assertEqual(evidence, [])
         self.assertEqual(len(client.calls), before)
 
