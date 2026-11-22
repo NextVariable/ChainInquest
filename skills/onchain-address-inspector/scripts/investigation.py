@@ -66,7 +66,15 @@ def history_saver(path):
             target = Path(path)
             temporary = target.with_suffix(target.suffix + ".tmp")
             temporary.write_text(body, encoding="utf-8")
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass
             os.replace(temporary, target)
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
         except (OSError, ValueError, RecursionError):
             failed = True
 

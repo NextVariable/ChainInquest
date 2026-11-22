@@ -372,6 +372,12 @@ def _resume_state(state, name, chain_id, address, start, end):
         and isinstance(state.get("queue"), list)
         and isinstance(state.get("rows"), list)
         and isinstance(state.get("gaps"), list)
+        and all(
+            isinstance(item, list) and len(item) == 2 and all(type(value) is int for value in item)
+            for item in state["queue"]
+        )
+        and type(state.get("current_page", 1)) is int
+        and state.get("current_page", 1) >= 1
     )
     if valid:
         return state
@@ -413,30 +419,42 @@ class RoutescanIndex:
 
     @staticmethod
     def result(payload, empty):
+        status = str(payload.get("status"))
         message = str(payload.get("message") or "")
         result = payload.get("result")
-        if payload.get("status") == "1" and isinstance(result, list):
+        if status == "1" and isinstance(result, list):
             return result
-        if isinstance(result, list) and not result:
-            return []
         low = message.lower()
-        if any(
-            text in low for text in ("no transactions found", "no logs found", "no records found")
-        ):
-            return []
         if "not supported" in low:
             raise QueryError("History index does not serve this network", "index_not_supported")
         if "result window is too large" in low:
             raise QueryError("Index pagination window exceeded", "index_page_window")
         if "rate limit" in low or "too many requests" in low:
             raise QueryError("History index rate limit", "index_rate_limited")
+        # An empty array alone is not evidence of absence. Etherscan-compatible
+        # providers use status 0 with an explicit no-record message; anything
+        # else is a rejected response, never a proven zero.
+        if status == "0" and isinstance(result, list) and not result:
+            if any(
+                text in low
+                for text in ("no transactions found", "no logs found", "no records found")
+            ):
+                return []
         raise QueryError(f"{empty} index response rejected", "index_response")
 
-    def watermark(self, end, state):
+    def watermark(self, end, state, start=0):
+        number, header_hash, seconds = self.rpc.header(end)
         cached = state.get("watermark")
         if isinstance(cached, dict) and cached.get("block") == end:
-            return cached
-        _, _, seconds = self.rpc.header(end)
+            if cached.get("block_hash") == header_hash and cached.get("timestamp") == seconds:
+                return cached
+            # A changed header hash for the same height is a reorg (or a stale
+            # file from another chain). Discard range progress before attesting.
+            name = state.get("provider", self.name)
+            chain_id = state.get("chain_id", self.chain_id)
+            address = state.get("address")
+            state.clear()
+            state.update(_index_state(name, chain_id, address, start, end))
         payload = self.read(module="block", action="getblockreward", blockno=end)
         row = payload.get("result")
         if payload.get("status") != "1" or not isinstance(row, dict):
@@ -446,32 +464,49 @@ class RoutescanIndex:
             stamp = int(row["timeStamp"])
         except (KeyError, TypeError, ValueError):
             raise QueryError("Malformed index block watermark", "index_response") from None
-        if block != end or stamp != seconds:
+        if block != end or stamp != seconds or number != end:
             raise QueryError("Index block watermark differs from RPC", "index_watermark_mismatch")
-        state["watermark"] = {"block": block, "timestamp": stamp, "verified": True}
+        provider_hash = row.get("blockHash")
+        if provider_hash is not None:
+            if not valid(HASH, provider_hash) or provider_hash.lower() != header_hash:
+                raise QueryError("Index block hash differs from RPC", "index_watermark_mismatch")
+        state["watermark"] = {
+            "block": block,
+            "timestamp": stamp,
+            "block_hash": header_hash,
+            "provider_block_hash": provider_hash.lower() if provider_hash else None,
+            "verified": True,
+        }
         return state["watermark"]
 
     def discover(self, address, start, end, state=None, save=None):
         state = _resume_state(state, self.name, self.chain_id, address, start, end)
+        transient = []
+        try:
+            # Validate the watermark first: a reorg resets range progress.
+            self.watermark(end, state, start)
+        except QueryError as error:
+            transient.append({"reason": error.category, "from": start, "to": end})
         rows, gaps = state["rows"], state["gaps"]
-        seen = {row[0] for row in rows if isinstance(row, list) and len(row) == 3}
+        by_hash = {
+            row[0]: (row[1], row[2])
+            for row in rows
+            if isinstance(row, list) and len(row) == 3 and isinstance(row[2], dict)
+        }
         try:
             cap = int(os.environ.get("CHAININQUEST_INDEX_MAX_PAGES", INDEX_PAGE_BUDGET))
         except ValueError:
             cap = INDEX_PAGE_BUDGET
         cap = min(max(cap, 1), 200)
-        transient = []
-        try:
-            self.watermark(end, state)
-        except QueryError as error:
-            transient.append({"reason": error.category, "from": start, "to": end})
-        while state["queue"] and state["requests"] < cap:
+        run_requests = 0
+        while state["queue"] and run_requests < cap:
             if self.client.remaining() <= 1:
                 transient.append({"from": start, "to": end, "reason": "index_deadline"})
                 break
             first, last = state["queue"][0]
             page = state.get("current_page", 1)
             state["requests"] += 1
+            run_requests += 1
             try:
                 items = self.result(
                     self.read(
@@ -507,9 +542,18 @@ class RoutescanIndex:
                 except (ValueError, TypeError, KeyError, AttributeError):
                     gaps.append({"reason": "index_row", "from": first, "to": last})
                     continue
-                if hash_ in seen:
+                if hash_ in by_hash:
+                    if by_hash[hash_] != (block, claims):
+                        gaps.append(
+                            {
+                                "reason": "index_row_conflict",
+                                "hash": hash_,
+                                "from": first,
+                                "to": last,
+                            }
+                        )
                     continue
-                seen.add(hash_)
+                by_hash[hash_] = (block, claims)
                 rows.append([hash_, block, claims])
             if len(items) < ROUTESCAN_PAGE:
                 state["queue"].pop(0)
@@ -527,7 +571,7 @@ class RoutescanIndex:
                 state["current_page"] = page + 1
             if save:
                 save(state)
-        if state["queue"] and state["requests"] >= cap:
+        if state["queue"] and run_requests >= cap:
             transient.append({"from": start, "to": end, "reason": "index_page_budget"})
         state["done"] = not state["queue"]
         if save:
@@ -544,9 +588,24 @@ class RoutescanIndex:
             ),
             "attested": attested,
             "watermark": state.get("watermark"),
+            "attestation": {
+                "kind": "provider_watermark_and_exhaustive_pagination",
+                "proves": (
+                    "the provider reports the requested end block and returned every page it "
+                    "holds for each requested range"
+                ),
+                "does_not_prove": (
+                    "independent on-chain proof that the provider omitted no records; this is "
+                    "not a consensus-level completeness proof"
+                ),
+                "watermark_fields": (
+                    "block number and timestamp; provider block hash when supplied"
+                ),
+            },
             "pagination": {
                 "page_size": ROUTESCAN_PAGE,
                 "requests": state["requests"],
+                "requests_this_run": run_requests,
                 "rows": len(rows),
                 "terminal": state["done"],
                 "pending_ranges": len(state["queue"]),
@@ -599,18 +658,18 @@ class RoutescanIndex:
 
     def discover_logs(self, address, first, last, state=None, save=None):
         state = _resume_state(state, self.name + ":logs", self.chain_id, address, first, last)
+        transient = []
+        try:
+            self.watermark(last, state, first)
+        except QueryError as error:
+            transient.append({"reason": error.category, "from": first, "to": last})
         rows, gaps = state["rows"], state["gaps"]
-        seen = {
-            (row[0].get("transactionHash"), row[0].get("logIndex"))
+        by_key = {
+            (row[0].get("transactionHash"), row[0].get("logIndex")): row[0]
             for row in rows
             if isinstance(row, list) and row and isinstance(row[0], dict)
         }
         queries = self.logs_queries(address, state)
-        transient = []
-        try:
-            self.watermark(last, state)
-        except QueryError as error:
-            transient.append({"reason": error.category, "from": first, "to": last})
         for query in queries:
             while not query["done"]:
                 if len(rows) >= MAX_INDEX_LOGS:
@@ -676,9 +735,18 @@ class RoutescanIndex:
                         )
                         continue
                     key = raw["transactionHash"], raw["logIndex"]
-                    if key in seen:
+                    if key in by_key:
+                        if by_key[key] != raw:
+                            gaps.append(
+                                {
+                                    "reason": "index_log_conflict",
+                                    "from": first,
+                                    "to": last,
+                                    "filter": query["filter"],
+                                }
+                            )
                         continue
-                    seen.add(key)
+                    by_key[key] = raw
                     rows.append([raw, query["filter"]])
                 if len(items) < ROUTESCAN_PAGE:
                     query["done"] = True
@@ -708,6 +776,17 @@ class RoutescanIndex:
             ),
             "attested": attested,
             "watermark": state.get("watermark"),
+            "attestation": {
+                "kind": "provider_watermark_and_exhaustive_pagination",
+                "proves": (
+                    "the provider reports the requested end block and returned every log page "
+                    "it holds for each participation filter"
+                ),
+                "does_not_prove": (
+                    "independent on-chain proof that the provider omitted no logs; receipts are "
+                    "the independent check for each returned row"
+                ),
+            },
             "queries": {query["key"]: query["done"] for query in queries},
             "rows": len(rows),
             "gaps": gaps_all,
