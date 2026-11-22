@@ -10,7 +10,7 @@ const htmlExport = byId("export-html");
 const resumeAction = byId("resume-action");
 const chainNames = {1: "Ethereum Mainnet", 8453: "Base Mainnet", 10143: "Monad Testnet"};
 const statuses = {queued: "Waiting to start", running: "Investigating", complete: "Investigation complete", partial: "Report ready with coverage gaps", failed: "Investigation failed"};
-const phases = {planning: "Plan prepared", pinned_snapshot: "Snapshot pinned", collecting: "Collecting chain evidence", address_checkpoint: "Contract report saved", cross_checking: "Checking evidence", report_ready: "Report ready", failed: "Investigation stopped"};
+const phases = {planning: "Plan prepared", pinned_snapshot: "Snapshot pinned", collecting: "Collecting chain evidence", address_checkpoint: "Contract report saved", supplementing: "Supplementary investigation", cross_checking: "Checking evidence", report_ready: "Report ready", failed: "Investigation stopped"};
 let reviewed = null;
 let reviewGeneration = 0;
 let currentJob = null;
@@ -66,7 +66,9 @@ async function displayReview() {
   if (generation !== reviewGeneration) return;
   const plan = preview.plan;
   byId("planned").append(details("Validated scope and planner",
-    {goal: plan.goal, ranges: plan.ranges, budget_seconds: plan.budget_seconds, planner: plan.planner}));
+    {goal: plan.goal, ranges: plan.ranges, budget_seconds: plan.budget_seconds, planner: plan.planner,
+     plan: plan.plan ? {focus: plan.plan.focus, steps: plan.plan.steps, budget: plan.plan.budget,
+                        constraints: plan.plan.constraints} : undefined}));
   const rows = plan.entries.map((contract) => {
     const row = node("div", "", "contract");
     row.append(node("strong", chainNames[contract.chain_id] || String(contract.chain_id)),
@@ -88,10 +90,61 @@ function details(label, content) {
   return result;
 }
 
-function metric(label, value) {
+function metric(label, value, complete) {
   const element = node("div", "", "measure");
-  element.append(node("strong", value === null || value === undefined ? "Unknown" : String(value)), node("span", label));
+  let shown = value === null || value === undefined ? "Unknown" : String(value);
+  if (value === 0 && complete === false) shown = "Unknown (0 observed)";
+  element.append(node("strong", shown), node("span", label));
   return element;
+}
+
+function coverageStatus(coverage) {
+  if (coverage.complete) return "Complete for this scope";
+  if (!coverage.status || coverage.status === "unknown") return "Coverage unknown";
+  return "Partial coverage";
+}
+
+function gapList(coverage) {
+  const gaps = coverage.gaps || [];
+  if (!gaps.length) return null;
+  const box = node("details");
+  box.append(node("summary", "Evidence gaps (" + gaps.length + ")"));
+  const list = node("ul");
+  gaps.slice(0, 20).forEach((gap) => list.append(node("li", gap.reason || gap.category || "unclassified gap")));
+  if (gaps.length > 20) list.append(node("li", "First 20 shown. Export JSON for all gaps."));
+  box.append(list);
+  return box;
+}
+
+function conclusionsPanel(conclusions) {
+  const box = node("details");
+  box.open = true;
+  box.append(node("summary", "Facts, inferences and unknowns"));
+  const facts = conclusions.facts || [];
+  const inferences = conclusions.inferences || [];
+  const unknown = conclusions.unknown || [];
+  const list = (title, items, label) => {
+    const wrap = node("section");
+    wrap.append(node("h4", title + " (" + items.length + ")"));
+    if (!items.length) { wrap.append(node("p", "None recorded.")); return wrap; }
+    const ul = node("ul");
+    items.slice(0, 25).forEach((item) => ul.append(node("li", label(item))));
+    if (items.length > 25) ul.append(node("li", "First 25 shown. Export JSON for all records."));
+    wrap.append(ul);
+    return wrap;
+  };
+  box.append(
+    list("Established facts", facts, (f) => f.scope === "observed_evidence"
+      ? "Chain " + f.chain_id + " · " + f.transactions + " transactions, " + f.events +
+        " events · " + (f.coverage_complete ? "complete coverage" : "observed sample")
+      : "Chain " + f.chain_id + " · counts withheld: " + (f.reason || "coverage incomplete")),
+    list("Inferences (not facts)", inferences, (i) => "Chain " + i.chain_id + " · " + i.type +
+      " · " + (i.coverage_complete ? "complete coverage" : "partial coverage")),
+    list("Unknowns and evidence gaps", unknown,
+      (u) => "Chain " + u.chain_id + " · " + (u.reason || u.category || "unknown")),
+    node("p", (conclusions.interpretation || {}).note || "Missing data is not zero activity.")
+  );
+  return box;
 }
 
 function transactionLink(url) {
@@ -155,9 +208,10 @@ function evidenceConnections(graph, catalog) {
 function renderChain(id, chain) {
   const card = node("article", "", "chain");
   const title = node("div", "", "section-title");
-  title.append(node("h3", chainNames[id] || id), node("span", chain.coverage.complete ? "Complete for this scope" : "Partial coverage", "chip"));
+  title.append(node("h3", chainNames[id] || id), node("span", coverageStatus(chain.coverage), "chip"));
   card.append(title);
   const report = chain.report;
+  const complete = Boolean(chain.coverage.complete);
   const bound = report.resolved_range;
   if (bound) {
     const line = bound.from_time_inclusive ?
@@ -167,10 +221,12 @@ function renderChain(id, chain) {
   }
   const metrics = node("div", "", "metrics");
   const values = report.deterministic_metrics;
-  metrics.append(metric("Top-level transactions", values?.transactions),
-                 metric("Verified events", values?.events),
-                 metric("Observed counterparties", chain.analysis?.observed_counterparties));
+  metrics.append(metric("Top-level transactions", values?.transactions, complete),
+                 metric("Verified events", values?.events, complete),
+                 metric("Observed counterparties", chain.analysis?.observed_counterparties, complete));
   card.append(metrics);
+  const gaps = gapList(chain.coverage);
+  if (gaps) card.append(gaps);
   card.append(details("Coverage and sources", {coverage: chain.coverage, sources: report.data_sources, cross_check: chain.cross_check}));
   card.append(details("Contracts and attribution", report.deployments));
   if (chain.analysis) {
@@ -230,7 +286,7 @@ async function follow(id) {
       if (sequence !== monitor) break;
       reportArea.replaceChildren(node("h3", result.project), ...Object.entries(result.chains).map(([key, value]) => renderChain(key, value)));
       if (result.issues.length) reportArea.append(details("Investigation issues", result.issues));
-      reportArea.prepend(details("Facts, inferences and unknowns", result.conclusions || {}));
+      reportArea.prepend(conclusionsPanel(result.conclusions || {}));
       resultExport.hidden = false;
       htmlExport.hidden = false;
       break;
