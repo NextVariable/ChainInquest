@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "web"))
 from report_html import render
 
 
-def result(complete, transactions, gaps=None):
+def result(complete, transactions, gaps=None, deployments=None):
     return {
         "id": "a" * 32,
         "project": "<script>alert(1)</script>",
@@ -40,6 +40,7 @@ def result(complete, transactions, gaps=None):
                         "status": {"success": transactions, "failed": 0},
                     },
                     "evidence_index": {},
+                    "deployments": deployments or [],
                     "data_sources": {"rpc": "configured endpoint (URL omitted)"},
                 },
                 "analysis": {
@@ -78,6 +79,27 @@ class ReportHtmlTests(unittest.TestCase):
         output = render(result(False, 0)).decode()
         self.assertIn("2026-01-01", output)
         self.assertIn("<td>Unknown</td>", output)
+
+    def test_declared_attribution_is_not_presented_as_verified_ownership(self):
+        deployments = [
+            {
+                "id": "core",
+                "contracts": [
+                    {
+                        "address": "0x" + "1" * 40,
+                        "attribution": {
+                            "status": "confirmed",
+                            "sources": ["https://example.org/notice"],
+                        },
+                    }
+                ],
+            }
+        ]
+        output = render(result(True, 1, deployments=deployments)).decode()
+        self.assertIn("Contracts and declared attribution", output)
+        self.assertIn("0x" + "1" * 40, output)
+        self.assertIn("https://example.org/notice", output)
+        self.assertIn("not legal or organizational ownership", output)
 
 
 if __name__ == "__main__":

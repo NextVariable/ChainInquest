@@ -66,8 +66,19 @@ class JobStore:
 
     def state(self, job_id):
         value = load_json(self.directory(job_id) / "state.json", 1024 * 1024)[0]
-        if not isinstance(value, dict):
+        if not isinstance(value, dict) or value.get("id") != job_id:
             raise QueryError("Investigation state file is malformed", "invalid_job")
+        for key, kind in (
+            ("status", str),
+            ("plan", dict),
+            ("created_at", str),
+            ("completed", list),
+            ("logs", list),
+            ("attempts", int),
+            ("result_ready", bool),
+        ):
+            if type(value.get(key)) is not kind:
+                raise QueryError("Investigation state file is malformed", "invalid_job")
         return value
 
     def result(self, job_id):

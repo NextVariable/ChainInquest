@@ -293,6 +293,13 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(gaps, [])
         self.assertTrue(saved[-1]["done"])
 
+        malformed = {**saved[-1], "rows": {"not": "rows"}}
+        reset = EtherscanAdapter(INDEX_SECRET, SimpleNamespace(timeout=2, remaining=lambda: 2))
+        with patch.object(reset, "page", return_value=[]):
+            rows, _ = reset.discover(A, 1, 3, state=malformed)
+        self.assertEqual(rows, [])
+        self.assertEqual(reset.coverage["pagination"]["rows"], 0)
+
     def test_index_page_timeout_is_reported_on_python_310(self):
         class Client:
             timeout = 1

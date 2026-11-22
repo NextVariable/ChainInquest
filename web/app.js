@@ -208,9 +208,11 @@ async function displayReview() {
   planned.append(details("Raw plan and budget (advanced)", plan));
   const rows = plan.entries.map((contract) => {
     const row = node("div", "", "contract");
+    const status = contract.attribution.status;
     row.append(node("strong", chainNames[contract.chain_id] || String(contract.chain_id)),
       node("p", contract.address),
-      node("p", "Attribution: " + contract.attribution.status),
+      node("p", "Declared attribution: " + status +
+        (status === "confirmed" ? " (provided by you; not independently verified)" : "")),
       node("p", "Source: " + contract.attribution.sources.join(" | ")));
     return row;
   });
@@ -478,6 +480,9 @@ async function follow(id) {
   const sequence = ++monitor;
   resultExport.hidden = true;
   htmlExport.hidden = true;
+  byId("feedback").hidden = true;
+  byId("feedback-form").hidden = false;
+  byId("feedback-done").hidden = true;
   reportArea.replaceChildren();
   while (sequence === monitor) {
     const state = await fetchJson("/api/jobs/" + id);

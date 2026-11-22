@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import os
 import sys
 import tempfile
@@ -79,6 +80,20 @@ class InvestigationJobTests(unittest.TestCase):
             store = JobStore(tmp)
             job = store.create(plan_investigation(request()))
             (Path(tmp) / job / "state.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(QueryError) as raised:
+                store.state(job)
+            self.assertEqual(raised.exception.category, "invalid_job")
+            with self.assertRaises(QueryError):
+                store.result(job)
+
+    def test_state_file_with_wrong_field_types_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(tmp)
+            job = store.create(plan_investigation(request()))
+            path = Path(tmp) / job / "state.json"
+            state = json.loads(path.read_text(encoding="utf-8"))
+            state["attempts"] = "one"
+            path.write_text(json.dumps(state), encoding="utf-8")
             with self.assertRaises(QueryError) as raised:
                 store.state(job)
             self.assertEqual(raised.exception.category, "invalid_job")

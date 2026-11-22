@@ -162,7 +162,7 @@ python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30
 python3 scripts/beta_ops.py --store artifacts/web-investigations --days 30 --apply
 ```
 
-Running jobs and symlinks are skipped. There is no scheduler; pruning is an operator action.
+Running jobs and symlinks are skipped. Each candidate must be a direct, real child of the store or account directory, must have a readable state file with a valid age timestamp, and must not be `running` or `queued`. Deletion re-checks the state and takes the job's `.run.lock` immediately before removal, so a job that starts after planning is skipped as well. Malformed state, wrong directory names and paths outside the store are never deleted. There is no scheduler; pruning is an operator action.
 
 ### Deployment checks
 
@@ -177,6 +177,53 @@ Running jobs and symlinks are skipped. There is no scheduler; pruning is an oper
 | Run budget | 120s default (15–240s), three attempts, 8 contracts, 60 index pages |
 | Redaction | RPC and index URLs omitted from reports; Authorization and bodies never logged; state files 0600, directories 0700 |
 | Restart | Completed jobs and checkpoints persist; the page detects a stalled run and offers resume |
+
+### Release hardening (V4.1 review)
+
+The pre-release audit added failure-path checks without changing the investigation engine:
+
+- Job state is validated against the expected schema on read. A truncated or type-corrupted `state.json` now raises `invalid_job` instead of a raw `KeyError` or `TypeError`, and the page reports it as a missing or invalid investigation.
+- Etherscan resume state is reused only when the provider tag, address, block range, page counter, row shape, gap shape and `done` flag all validate. Any mismatch restarts that range from page one rather than trusting malformed rows.
+- Pruning now re-validates the path, age, status and run lock at deletion time, as described under Retention.
+- The plan preview and HTML report label contract attribution as declared by the requester. "Confirmed" means the requester cited a source; it is not independent verification of ownership. The report says so beside the attribution table.
+- Feedback is reset when a new investigation is followed, so a previous job's thank-you state is not shown for another job.
+- An incomplete range still renders as `Unknown (0 observed)`, never as a proven zero.
+
+### Closed-beta acceptance checklist
+
+Run these against the exact build being invited. Status reflects the local review; production items remain blocked until the owner approves a host.
+
+| # | Check | Status |
+| --- | --- | --- |
+| 1 | `python3 -m unittest discover -s tests` passes | pass (154 tests, 1 skipped) |
+| 2 | `ruff check .`, `ruff format --check .`, `node --check web/app.js`, `python3 scripts/check_package.py` pass | pass |
+| 3 | Unauthenticated preview, job, result and export requests are rejected in closed-beta mode | pass (local test) |
+| 4 | One account cannot read, resume or export another account's job | pass (local test) |
+| 5 | Cross-origin POST, mismatched Host and replayed or expired approvals are rejected | pass (local test) |
+| 6 | Pruning leaves running, queued, fresh, locked, malformed and symlinked entries untouched | pass (unit tests) |
+| 7 | A corrupted state or resume file fails explicitly and recovers by restarting the affected range | pass (unit tests) |
+| 8 | Incomplete coverage never renders as zero activity in JSON, HTML or the page | pass (unit tests) |
+| 9 | Guided Circle example completes in a real browser with exports and feedback | pass (local, see below) |
+| 10 | TLS, exact Host header, log scrubbing and rate limits at the proxy | blocked (no host) |
+| 11 | Token issue, rotation and revocation with real testers | blocked (no testers) |
+| 12 | Base and long Ethereum ranges use an approved snapshot or paid index plan | blocked (no credential) |
+
+The single local browser run and the internal feedback entry are engineering checks. One internal run is not a user metric, and the sample must not be presented as real tester adoption.
+
+### Release notes and tag plan (prepared, not published)
+
+Draft tag: `v4.1.0-beta.1`, created only after PR #1 and PR #5 are merged into `main` and the post-merge CI run is green. Do not tag the feature branch.
+
+Release notes draft:
+
+- Guided project entry with contract list, declares source, goal and scope; manifest stays under Advanced.
+- Reviewable plan preview with single-use, 5-minute approval and no-membership model planner.
+- Readable report and HTML export separating established facts, labeled inferences, unknowns and evidence gaps.
+- Structured post-report feedback stored per job with server-computed elapsed time and coverage.
+- Safe manual retention tooling that skips running, locked, symlinked and malformed entries.
+- Hardened state and resume validation; malformed files fail explicitly instead of crashing a request.
+- Declared attribution is labelled as requester-provided, not independently verified ownership.
+- Known limits: Base and long Ethereum ranges remain `unknown` without a paid index plan or operator snapshot; deployment, TLS and token operations have only been validated locally.
 
 ### Blocking items before any public invite
 

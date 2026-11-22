@@ -40,7 +40,7 @@
             <textarea id="addresses" rows="4" spellcheck="false" placeholder="0x6d903f6003cca6255D85CcA4D3B5E5146dC33925"></textarea>
             <label for="source">Where do these addresses come from? <span>HTTPS source</span></label>
             <input id="source" type="url" maxlength="500" placeholder="https://docs.project.xyz/deployments" autocomplete="off">
-            <p class="hint">The report cites this page as the attribution source. Contracts are never discovered from chain data alone.</p>
+            <p class="hint">The report cites this page as your declared attribution source. ChainInquest verifies on-chain behavior, not legal ownership; it does not independently confirm that the project controls these addresses.</p>
           </fieldset>
 
           <fieldset>
@@ -82,12 +82,12 @@
         </form>
 
         <div id="review" hidden>
-          <h3>Review the plan and contracts</h3>
+          <h3>Review the plan and declared contracts</h3>
           <p class="hint">Nothing has been queried yet. The approval expires after five minutes.</p>
           <div id="planned"></div>
-          <h4>Contracts and attribution</h4>
+          <h4>Contracts and declared attribution</h4>
           <div id="contracts"></div>
-          <label class="confirm"><input type="checkbox" id="confirmed"> I reviewed the contract addresses and the attribution source.</label>
+          <label class="confirm"><input type="checkbox" id="confirmed"> I declare these are the project's contracts according to the source above. I understand ChainInquest has not independently verified ownership.</label>
           <button type="button" id="start" disabled>Start investigation</button>
         </div>
       </section>
@@ -105,7 +105,7 @@
         <div id="results"></div>
         <section id="feedback" class="feedback" hidden aria-labelledby="feedback-title">
           <h3 id="feedback-title">Was this investigation useful?</h3>
-          <p class="hint">Five quick questions. Answers are stored with this investigation only; no tokens are recorded.</p>
+          <p class="hint">Four quick questions. Answers are stored with this investigation only; no tokens are recorded. Do not include private keys, tokens or personal data in the comment.</p>
           <form id="feedback-form">
             <label for="fb-completed">Did you get the answer you needed?</label>
             <select id="fb-completed"><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select>

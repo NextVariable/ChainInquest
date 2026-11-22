@@ -3,6 +3,7 @@
 
 import argparse
 import datetime as dt
+import fcntl
 import json
 import re
 import shutil
@@ -19,8 +20,8 @@ def stores(root):
 
 
 def state_of(directory):
+    path = directory / "state.json"
     try:
-        path = directory / "state.json"
         if path.is_symlink() or path.stat().st_size > 1024 * 1024:
             return None
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -29,38 +30,85 @@ def state_of(directory):
     return value if isinstance(value, dict) else None
 
 
-def updated_at(state):
+def stamp_of(state):
     try:
-        return dt.datetime.fromisoformat(state["updated_at"])
+        stamp = dt.datetime.fromisoformat(state["updated_at"])
     except (KeyError, TypeError, ValueError):
         return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+
+
+def candidate(base, directory, days, now):
+    """Return an aged, finished job that is a direct, real child of base."""
+    if directory.is_symlink() or not directory.is_dir():
+        return None
+    try:
+        if directory.resolve().parent != base.resolve():
+            return None
+    except OSError:
+        return None
+    state = state_of(directory)
+    if state is None or state.get("status") in {"running", "queued"}:
+        return None
+    stamp = stamp_of(state)
+    if stamp is None:
+        return None
+    age = (now - stamp).total_seconds() / 86400
+    if age < days:
+        return None
+    return {
+        "path": str(directory),
+        "base": str(base),
+        "age_days": round(age, 1),
+        "status": state.get("status"),
+    }
+
+
+def lock(directory):
+    handle = (directory / ".run.lock").open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def delete(item, days, now):
+    """Re-check under the run lock immediately before deleting."""
+    directory = Path(item["path"])
+    base = Path(item["base"])
+    if candidate(base, directory, days, now) is None:
+        return False
+    handle = lock(directory)
+    if handle is None:
+        return False
+    try:
+        if candidate(base, directory, days, now) is None:
+            return False
+        shutil.rmtree(directory)
+        return True
+    finally:
+        handle.close()
 
 
 def plan(root, days):
     now = dt.datetime.now(dt.timezone.utc)
-    candidates = []
     reports = 0
+    items = []
     for base in stores(root):
         for directory in base.iterdir():
-            if not JOB.fullmatch(directory.name) or not directory.is_dir():
+            if not JOB.fullmatch(directory.name):
                 continue
-            if directory.is_symlink():
+            if directory.is_symlink() or not directory.is_dir():
                 continue
             state = state_of(directory)
-            if state is None:
-                continue
-            if state.get("result_ready"):
+            if state is not None and state.get("result_ready"):
                 reports += 1
-            stamp = updated_at(state)
-            if stamp is None:
-                continue
-            age = (now - stamp).total_seconds() / 86400
-            if age < days or state.get("status") == "running":
-                continue
-            candidates.append(
-                {"path": str(directory), "age_days": round(age, 1), "status": state.get("status")}
-            )
-    return {"reports": reports, "candidates": candidates}
+            found = candidate(base, directory, days, now)
+            if found:
+                items.append(found)
+    return {"reports": reports, "candidates": items}
 
 
 def main():
@@ -77,12 +125,20 @@ def main():
     if not 1 <= args.days <= 3650:
         raise SystemExit("--days must be between 1 and 3650")
     outcome = plan(root, args.days)
-    deleted = 0
+    deleted, skipped = 0, []
     if args.apply:
+        now = dt.datetime.now(dt.timezone.utc)
         for item in outcome["candidates"]:
-            shutil.rmtree(item["path"])
-            deleted += 1
-    outcome.update({"days": args.days, "applied": args.apply, "deleted": deleted})
+            try:
+                if delete(item, args.days, now):
+                    deleted += 1
+                else:
+                    skipped.append(item["path"])
+            except OSError as error:
+                skipped.append(f"{item['path']}: {error.strerror or 'delete failed'}")
+    outcome.update(
+        {"days": args.days, "applied": args.apply, "deleted": deleted, "skipped": skipped}
+    )
     print(json.dumps(outcome, ensure_ascii=False, indent=2))
 
 

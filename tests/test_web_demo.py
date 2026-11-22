@@ -45,6 +45,8 @@ class WebDemoTests(unittest.TestCase):
                     self.assertIn(b"Investigate a Web3 project", page)
                     self.assertIn(b'id="addresses"', page)
                     self.assertIn(b'id="source"', page)
+                    self.assertIn(b"not independently verified", page)
+                    self.assertIn(b"private keys", page)
                     self.assertEqual(call("GET", "/", Host="untrusted.example")[0], 403)
                     self.assertEqual(call("GET", "/api/jobs/../../state.json")[0], 404)
                     self.assertEqual(call("POST", "/api/jobs", json.dumps(request()))[0], 403)

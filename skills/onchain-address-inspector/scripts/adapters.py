@@ -291,6 +291,13 @@ class EtherscanAdapter:
             or state.get("address") != address
             or state.get("start_block") != start
             or state.get("end_block") != end
+            or type(state.get("next_page")) is not int
+            or not 1 <= state["next_page"] <= 10_000
+            or not isinstance(state.get("rows"), list)
+            or not all(isinstance(row, list) and len(row) == 3 for row in state["rows"])
+            or not isinstance(state.get("gaps"), list)
+            or not all(isinstance(gap, dict) for gap in state["gaps"])
+            or type(state.get("done")) is not bool
         ):
             state = {
                 "schema_version": 1,
