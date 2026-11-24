@@ -2,37 +2,27 @@
 
 [![自动测试 / CI](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml)
 
-核查钱包与合约地址的链上交易活动，输出成功状态、原生币金额、直接交互集中度和可追溯证据。目前支持 Monad 测试网。只读、无需连接钱包、基础区块查询无需 API 密钥；默认运行只依赖 Python 3.10+ 标准库，curl 是可选传输。它扫描顶层交易，核对回执和区块身份，以整数 wei 计算成功交易金额，并明确说明漏查、未知状态和统计边界。
+核查钱包与合约地址的链上交易活动，输出成功状态、原生币金额、直接交互集中度和可追溯证据。单地址入口支持 Monad 测试网。项目入口另支持 Base 和 Ethereum 主网。只读、无需连接钱包、基础区块查询无需 API 密钥；默认运行只依赖 Python 3.10+ 标准库，curl 是可选传输。它扫描顶层交易，核对回执和区块身份，以整数 wei 计算成功交易金额，并明确说明漏查、未知状态和统计边界。
 
-Inspect on-chain wallet and contract activity, including transaction outcomes, native-coin amounts, direct-interaction concentration, and traceable evidence. Currently supports Monad Testnet. Read-only, with no wallet connection. Basic block queries do not require an API key. Default runtime uses the Python 3.10+ standard library; curl is optional. The scanner validates top-level transactions, receipts, and block identities, calculates amounts in integer wei, and discloses gaps and unknown statuses.
+Inspect on-chain wallet and contract activity, including transaction outcomes, native-coin amounts, direct-interaction concentration, and traceable evidence. Single-address checks target Monad Testnet; project investigations also support Base and Ethereum Mainnet. Read-only, with no wallet connection. Basic block queries do not require an API key. Default runtime uses the Python 3.10+ standard library; curl is optional. The scanner validates top-level transactions, receipts, and block identities, calculates amounts in integer wei, and discloses gaps and unknown statuses.
 
 调用集中度回答的是“本范围内哪些地址直接向目标发送交易，以及各占多少”，不能据此证明真人用户量、刷量或商业采用。测试网数据也不能代表主网使用情况。
 
 Concentration describes which addresses directly send transactions to the target within the scanned range and their shares. It does not establish human user counts, manipulation, or commercial adoption. Testnet activity does not represent mainnet usage.
 
-## 安装与使用 / Installation and usage
+## Codex 安装与使用 / Codex installation and usage
 
-先下载仓库，再把完整 Skill 安装到 Codex 的发现目录。同名目录已存在时命令会停止；更新前请先检查现有内容，避免覆盖自己的修改。
+按 [README 的 Codex 快速开始](../README.md#codex-快速开始)或 [English quickstart](../README.en.md#codex-quickstart) 将完整 Skill 复制到调查工作区的 `.agents/skills/onchain-address-inspector`。如需跨工作区使用，可选择将同一完整包复制到用户目录 `$HOME/.agents/skills/onchain-address-inspector`。已有同名目录时先检查版本与本地修改。若 Codex 列出多份同名 Skill，请选择预期目录中的那一份。必要时重开会话。发现目录规则见 [Codex Skill 文档](https://developers.openai.com/codex/skills)。
 
-Clone the repository and copy the complete Skill into the Codex discovery directory. Installation stops if the destination already exists; inspect existing files before updating to preserve your changes.
+Install the complete Skill into the investigation workspace using either quickstart above. To use it across workspaces, copy the same package to `$HOME/.agents/skills/onchain-address-inspector`. Inspect an existing installation before updating it. If Codex lists multiple Skills with the same name, select the copy from the intended directory. Restart the session if it does not appear.
 
-```sh
-git clone https://github.com/NextVariable/ChainInquest.git
-cd ChainInquest
+在 Codex 中使用 `$onchain-address-inspector` 提出自然语言调查任务。项目级请求应附网络、合约地址、确认来源和区块或时间范围。宿主生成参数并调用本地脚本，项目调查结果按交易、事件及回执分别报告覆盖。默认流程无需独立模型 API。真实宿主证据见 [Codex 验收](codex-acceptance.md)。
 
-skill_destination="${CODEX_HOME:-$HOME/.codex}/skills/onchain-address-inspector"
-test ! -e "$skill_destination" && mkdir -p "$(dirname "$skill_destination")" && cp -R skills/onchain-address-inspector "$skill_destination"
-```
+Invoke `$onchain-address-inspector` in Codex with a natural-language request. For a project investigation, include the network, contract address, attribution source, and block or time window. The host builds arguments and runs the local scripts. Project reports distinguish transaction, event, and receipt coverage. The default workflow requires no separate model API.
 
-必要时重开 Codex 会话，然后发送：
+## 直接 CLI / Direct CLI
 
-Restart the Codex session if necessary, then send:
-
-```text
-使用 $onchain-address-inspector，核查 Monad 测试网地址 0x000000000000000000000000000000000000dEaD 最近 100 块的顶层活动，说明覆盖情况、发起地址集中度和可核对的交易链接。
-
-Use $onchain-address-inspector to inspect address 0x000000000000000000000000000000000000dEaD on Monad Testnet over the latest 100 blocks. Explain coverage, direct-caller concentration, and traceable transaction links.
-```
+以下命令从仓库根目录运行。 Run the following command from the repository root.
 
 也可直接运行命令行入口。以下通用地址只演示参数，请替换为目标地址；不预设该地址有活动。
 

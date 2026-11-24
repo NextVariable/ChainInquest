@@ -1,4 +1,6 @@
-# ChainInquest closed beta deployment
+# ChainInquest optional closed-beta deployment templates
+
+These templates are an optional maintainer reference. The [Codex-native delivery](../docs/codex-acceptance.md) uses the local Skill. Public deployment is outside its scope.
 
 Minimal single-host deployment: one Linux VPS, one Python process, systemd, and
 Caddy terminating TLS. No containers, queues or managed services are required.
