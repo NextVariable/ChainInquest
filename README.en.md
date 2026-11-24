@@ -1,60 +1,53 @@
 # ChainInquest
 
-[中文](README.md) · [Full usage guide](docs/usage.md) · [Contributing](CONTRIBUTING.md)
+**Agent-Native On-chain Investigation Skill & Domain Harness**
+
+[中文](README.md) · [Usage guide](docs/usage.md) · [Codex host acceptance](docs/codex-acceptance.md)
 
 [![CI](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml/badge.svg)](https://github.com/NextVariable/ChainInquest/actions/workflows/ci.yml)
 
-An Agent Skill for inspecting wallet and contract activity on Monad Testnet. Given an address and a bounded block range, it returns top-level transactions, receipt outcomes, native-coin amounts, direct-caller concentration, and traceable evidence. Read-only; no wallet connection required. Runtime uses the Python 3.10+ standard library, with optional curl transport.
+ChainInquest is a read-only investigation Skill for Codex. Codex interprets the natural-language objective and decides how to investigate. ChainInquest validates scope, queries chain data, checks evidence, computes metrics, and generates traceable reports within explicit budgets. Project investigations also support persisted state and resumption.
 
-V3 runs a curated project investigation across Monad Testnet, Base and Ethereum, with resumable tasks and a verifiable evidence graph. Start the local demo with `python3 web/server.py` and open `http://127.0.0.1:8000`. [V3 instructions, validation and deployment](docs/v3.md).
+Single-address checks target Monad Testnet. Project investigations can query Monad Testnet, Base Mainnet, and Ethereum Mainnet using a confirmed contract manifest. The base runtime requires Python 3.10+, with optional curl transport. No wallet connection or separate model API is required.
 
-V4 Beta adds bounded natural-language plans, HTML/JSON reports, watermarked history imports and closed-beta access controls. See [V4 validation and deployment gates](docs/v4-beta.md).
+## Codex quickstart
 
-## Install
+Copy the complete Skill into a new investigation workspace. The command preserves an existing installation and prints its location for review.
 
 ```sh
 git clone https://github.com/NextVariable/ChainInquest.git
-cd ChainInquest
-skill_destination="${CODEX_HOME:-$HOME/.codex}/skills/onchain-address-inspector"
-test ! -e "$skill_destination" && mkdir -p "$(dirname "$skill_destination")" && cp -R skills/onchain-address-inspector "$skill_destination"
+mkdir -p chaininquest-workspace/.agents/skills
+skill_destination="chaininquest-workspace/.agents/skills/onchain-address-inspector"
+if [ -e "$skill_destination" ] || [ -L "$skill_destination" ]; then
+  printf 'Skill already exists at %s\n' "$skill_destination" >&2
+else
+  cp -R ChainInquest/skills/onchain-address-inspector "$skill_destination"
+fi
+cd chaininquest-workspace
 ```
 
-Install the complete Skill directory. The command stops if the destination exists; review local modifications before updating. Restart the Codex session if needed, then ask:
+Open `chaininquest-workspace` in Codex, select the workspace copy of `$onchain-address-inspector`, and ask in natural language:
 
 ```text
-Use $onchain-address-inspector to inspect address 0x000000000000000000000000000000000000dEaD on Monad Testnet over the latest 100 blocks. Explain coverage, direct-caller concentration, and traceable transaction links.
+Use $onchain-address-inspector to inspect the Monad Testnet USDC contract
+0x534b2f3a21130d7a60830c2df862319e593943a3 over the latest 12 blocks.
+Explain top-level transaction counts, receipt outcomes, direct-caller concentration,
+coverage, and verifiable evidence.
 ```
 
-Or run the CLI directly:
+For a project investigation, provide confirmed networks, contract addresses, sources, and a time range. Ask Codex to report transaction, event, and receipt coverage separately. **ChainInquest** is the display name and `$onchain-address-inspector` remains the invocation name. See the [usage guide](docs/usage.md) and [Codex Skill documentation](https://developers.openai.com/codex/skills).
 
-```sh
-python3 skills/onchain-address-inspector/scripts/query.py \
-  --address 0x000000000000000000000000000000000000dEaD \
-  --recent-blocks 100 --progress
-```
+## Acceptance and scope
 
-Defaults: latest 100 blocks, 120-second total budget, maximum 1000 blocks. Larger ranges require an explicit longer budget such as `--total-timeout 600`; public RPC completion is not guaranteed. JSON goes to stdout; progress goes to stderr. Exit code 0 means complete; 2 means invalid arguments or incomplete results.
+Three live Codex host cases passed, establishing **`CODEX_NATIVE_READY`**. The host discovered the Skill, ran the installed package, and interpreted the evidence. **Complete 30-day historical coverage depends on the index, RPC, and query budget.** Both Compound windows in this acceptance run had gaps. Verified samples describe the records received. Unknown activity cannot be counted as zero, and address counts cannot establish human user counts. See the [public acceptance record](docs/codex-acceptance.md).
 
-Investigation mode adds ERC-20-shaped Transfer/Approval events, UTC daily trends and a structured evidence report. Use `--investigate` with block arguments or request `--days 7`, `--days 30` or paired `--from-time/--to-time` timestamps. Long windows rely on index candidates and RPC evidence, with coverage gaps reported explicitly.
+## Optional components
 
-V2.1 adds `--project-file` to aggregate saved, comparable reports for confirmed project contracts. **ChainInquest** is the repository and display name. The Skill invocation remains `$onchain-address-inspector`. [Project manifest](skills/onchain-address-inspector/references/project.md).
+- The [local Web demo](docs/v4-beta.md#run-locally) runs on loopback and is independent of the Codex installation.
+- [Closed-beta deployment templates](deploy/README.md) are retained as a maintainer reference.
 
-## Results and scope
+The delivery covers the Codex-native Skill and investigation Harness. MCP servers, integration with standard ChatGPT conversations, and public deployment are outside the delivery scope.
 
-Check `coverage.complete`, `coverage.chain_consistent`, and `errors` first. Partial scans describe retrieved samples only. `metrics=null` means a reliable aggregate is unavailable; unknown receipts are not failed transactions. Native amounts use integer wei and include only successful top-level value.
+## Maintenance
 
-Direct-caller concentration includes transfers, failed transactions, and unknown outcomes. It does not establish human users, manipulation, or commercial adoption. Investigation mode separates top-level native value from token events. The original Skill is scoped to Monad Testnet. V3 includes Base and Ethereum Mainnet. Complete history, internal calls and indirect interactions remain outside scope. See [usage](docs/usage.md) and [scope](skills/onchain-address-inspector/references/sources-and-scope.md).
-
-## Development
-
-The installable package lives in `skills/onchain-address-inspector/`: `SKILL.md` contains core instructions, `scripts/` runtime code, `references/` on-demand details, and `agents/` Codex interface metadata. Repository-level `tests/`, `scripts/`, and `docs/` hold regression tests, maintenance tools, and documentation.
-
-```sh
-python3 -m unittest discover -s tests -v
-```
-
-Tests use synthetic ledgers and local services, without public RPC. See [architecture](docs/architecture.md), [validation](docs/testing.md), and [contributing](CONTRIBUTING.md).
-
-## License
-
-[MIT](LICENSE). The example uses a generic address to demonstrate arguments; replace it with the address you want to inspect.
+[Architecture](docs/architecture.md) · [Testing](docs/testing.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE)
